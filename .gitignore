@@ -22,3 +22,8 @@ browser-storage/
 # editor
 .vscode/
 .idea/
+
+# export artifacts
+snipervrt.bundle
+snipervrt-source.tar.gz
+snipervrt-source.zip
