@@ -1,0 +1,86 @@
+import type { PolicyBundle } from "@snipervrt/shared";
+
+// Opinionated safe defaults. Cover the non-negotiable approvals listed in the
+// product spec. Projects can merge their own rules on top.
+export const DEFAULT_POLICY_BUNDLE: PolicyBundle = {
+  version: 1,
+  defaultOutcome: "allow",
+  approvalFloor: "high",
+  rules: [
+    {
+      id: "dry-run-always-allow",
+      description: "Dry-run mode executes nothing externally, so allow everything.",
+      mode: "dry-run",
+      outcome: "allow",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "simulation-always-allow",
+      description: "Simulation mode is fully virtual.",
+      mode: "simulation",
+      outcome: "allow",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "purchases-always-require-approval",
+      description: "Payments and purchases always require explicit approval.",
+      actionType: "purchase",
+      outcome: "require_approval",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "deletes-require-approval",
+      description: "Irreversible deletes require approval.",
+      actionType: "delete",
+      outcome: "require_approval",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "submit-requires-approval",
+      description: "Final form submissions require approval.",
+      actionType: "submit",
+      outcome: "require_approval",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "sends-require-approval",
+      description: "Outgoing messages to third parties require approval.",
+      actionType: "send",
+      outcome: "require_approval",
+      approvalScope: "per_task",
+      allowedRoles: [],
+    },
+    {
+      id: "authenticate-denied",
+      description: "The system never changes authentication settings on behalf of users.",
+      actionType: "authenticate",
+      outcome: "deny",
+      approvalScope: "per_action",
+      allowedRoles: [],
+      denyReason: "authentication changes are out of scope for autonomous runs",
+    },
+    {
+      id: "configure-requires-approval",
+      description: "Account / permission / billing configuration requires approval.",
+      actionType: "configure",
+      outcome: "require_approval",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+    {
+      id: "read-low-risk-allowed",
+      description: "Read / search / summarize at low risk runs autonomously.",
+      minRisk: "low",
+      maxRisk: "low",
+      actionType: "read",
+      outcome: "allow",
+      approvalScope: "per_action",
+      allowedRoles: [],
+    },
+  ],
+};

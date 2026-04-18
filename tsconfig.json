@@ -1,0 +1,30 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/prompts" },
+    { "path": "./packages/telemetry" },
+    { "path": "./packages/memory" },
+    { "path": "./packages/state" },
+    { "path": "./packages/policies" },
+    { "path": "./packages/planner" },
+    { "path": "./packages/connectors/core" },
+    { "path": "./packages/connectors/mcp" },
+    { "path": "./packages/connectors/browser" },
+    { "path": "./packages/connectors/gmail" },
+    { "path": "./packages/connectors/gcal" },
+    { "path": "./packages/connectors/notion" },
+    { "path": "./packages/connectors/github" },
+    { "path": "./packages/connectors/supabase" },
+    { "path": "./packages/agents/planning" },
+    { "path": "./packages/agents/integration" },
+    { "path": "./packages/agents/execution" },
+    { "path": "./packages/agents/validation" },
+    { "path": "./packages/agents/security" },
+    { "path": "./packages/agents/recovery" },
+    { "path": "./packages/agents/browser" },
+    { "path": "./packages/orchestrator" },
+    { "path": "./apps/api" },
+    { "path": "./apps/worker" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@snipervrt/worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc -b", "start": "node dist/index.js" },
+  "dependencies": {
+    "@snipervrt/orchestrator": "*",
+    "@snipervrt/api": "*",
+    "dotenv": "^16.4.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/orchestrator" },
+    { "path": "../../packages/state" },
+    { "path": "../../packages/policies" },
+    { "path": "../../packages/memory" },
+    { "path": "../../packages/planner" },
+    { "path": "../../packages/telemetry" },
+    { "path": "../../packages/connectors/core" },
+    { "path": "../../packages/agents/integration" },
+    { "path": "../../packages/agents/execution" },
+    { "path": "../../packages/agents/validation" },
+    { "path": "../../packages/agents/recovery" },
+    { "path": "../../packages/agents/security" }
+  ]
+}

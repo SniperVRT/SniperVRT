@@ -1,0 +1,12 @@
+{
+  "name": "@snipervrt/policies",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": "./dist/index.js" },
+  "scripts": { "build": "tsc -b" },
+  "dependencies": {
+    "@snipervrt/shared": "*"
+  }
+}

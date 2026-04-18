@@ -1,0 +1,28 @@
+{
+  "name": "@snipervrt/api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@snipervrt/shared": "*",
+    "@snipervrt/orchestrator": "*",
+    "@snipervrt/state": "*",
+    "@snipervrt/policies": "*",
+    "@snipervrt/memory": "*",
+    "@snipervrt/planner": "*",
+    "@snipervrt/prompts": "*",
+    "@snipervrt/telemetry": "*",
+    "@snipervrt/connector-core": "*",
+    "@snipervrt/agent-integration": "*",
+    "@snipervrt/agent-execution": "*",
+    "@snipervrt/agent-validation": "*",
+    "@snipervrt/agent-recovery": "*",
+    "@snipervrt/agent-security": "*",
+    "express": "^4.19.0",
+    "dotenv": "^16.4.0"
+  }
+}

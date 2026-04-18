@@ -1,0 +1,41 @@
+version: "3.9"
+
+# Local dev dependencies for the orchestrator. Bring up with:
+#   docker compose -f infra/docker-compose.yml up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: snipervrt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: snipervrt
+      POSTGRES_PASSWORD: snipervrt
+      POSTGRES_DB: snipervrt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U snipervrt"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: snipervrt-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-data:
+  redis-data:

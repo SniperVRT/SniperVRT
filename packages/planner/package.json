@@ -1,0 +1,16 @@
+{
+  "name": "@snipervrt/planner",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": "./dist/index.js" },
+  "scripts": { "build": "tsc -b" },
+  "dependencies": {
+    "@snipervrt/shared": "*",
+    "@snipervrt/prompts": "*",
+    "@snipervrt/telemetry": "*",
+    "@anthropic-ai/sdk": "^0.30.0",
+    "zod": "^3.23.0"
+  }
+}
