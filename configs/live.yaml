@@ -1,0 +1,6 @@
+live:
+  locked: true              # NEVER set false unless you explicitly approved live trading.
+  require_human_unlock: true
+  require_governance_approval: true
+  exchange: "binance"
+  sandbox: true

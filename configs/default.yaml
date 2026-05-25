@@ -1,0 +1,11 @@
+data:
+  default_symbol: "BTC/USDT"
+  default_timeframe: "1h"
+  default_exchange: "binance"
+  candles_back: 2000
+  allow_synthetic_fallback: true
+
+paper:
+  starting_equity: 10000.0
+  tick_seconds: 30
+  enable_on_start: false

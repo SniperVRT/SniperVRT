@@ -1,99 +1,92 @@
-# SniperVRT
+# SniperVRT — BTC AI Trading Platform
 
-A Claude-centered autonomous service orchestration platform. You hand it a goal; it plans, picks connectors, runs with policy + approvals in the loop, validates, retries, and produces auditable artifacts.
+A modular, professional-grade research → backtest → paper-trade → governance →
+(locked) live BTC trading platform. Built around hard safety primitives: live
+trading is **locked by default** behind four independent gates, every order
+passes through a strict risk engine, and every strategy decision is logged.
 
-The core bet: Claude is the brain, but never the only brain. Declarative layers (state machine, policy engine, connector registry, validation fast-path) decide what they can without an LLM call. Claude only shows up when reasoning is genuinely required.
-
----
-
-## Highlights
-
-- **Strict JSON boundary with Claude.** The planner, validator, recovery and security agents all call Claude with Zod-validated input/output. No free-form prose survives past the agent boundary.
-- **MCP > API > browser.** Connector selection always prefers MCP tools, falls back to direct APIs, and only drops to browser automation when explicitly asked.
-- **Policy engine is first-class.** Declarative first-match rules with an approval floor, not a pile of ifs scattered through the orchestrator.
-- **Explicit state machines.** `TASK_TRANSITIONS` and `STEP_TRANSITIONS` tables guard every status change — illegal transitions throw.
-- **Budget-aware.** A `Budget` accountant runs in front of every Claude call; `BUDGET_EXCEEDED` short-circuits the recovery agent to `abort`.
-- **Dry-run / simulation modes** short-circuit connectors before they hit the network.
-- **Swappable stores.** In-memory for tests and local dev, Postgres (`FOR UPDATE SKIP LOCKED`) for production.
+This is not a prototype, not a hype dashboard, and not a black box. It actually
+runs, persists state, executes paper trades, generates reports, and answers an
+honest question: *would the system trust itself to go live yet?*
 
 ---
+
+## What's inside
+
+```
+backend/        FastAPI app, models, strategies, risk, execution, paper, governance
+frontend/       Single-page Vue 3 + Chart.js UI (no build step, served by FastAPI)
+configs/        YAML config: data, risk, execution, live (locked by default)
+data/           Persisted market data
+runtime_state/  SQLite DB, paper account, positions, trades
+reports/        Council decisions, readiness reports, paper summaries
+logs/           Structured platform logs
+scripts/        One-command startup, backtest, tournament, validation
+docker/         Dockerfile + docker-compose
+tests/          Pytest suite covering data, strategies, risk, backtest, paper, API
+```
 
 ## Quick start
 
 ```bash
-npm install
+# 1. Install Python deps (Python 3.11+)
+pip install -r backend/requirements.txt
 
-# Run the end-to-end example against in-memory backends + a scripted Claude.
-# Zero external services or API keys needed.
-npm run example
+# 2. Start backend + UI
+./scripts/start.sh                # http://localhost:8000
 
-# Run the full test suite.
-npm test
+# 3. Run a backtest from the CLI
+./scripts/run_backtest.sh ensemble
+
+# 4. Run the full strategy tournament
+./scripts/run_tournament.sh
+
+# 5. Generate the governance / council artifacts
+./scripts/validate.sh
+
+# 6. Run the test suite
+PYTHONPATH=. pytest tests/
 ```
 
-To run against real infrastructure:
+Or with Docker:
 
 ```bash
-cp .env.example .env   # fill in keys
-
-docker compose -f infra/docker-compose.yml up -d
-DATABASE_URL=postgres://snipervrt:snipervrt@localhost:5432/snipervrt npm run db:migrate
-
-npm run build
-npm run start:api    # API on :8080
-npm run start:worker # polling worker
+cp .env.example .env
+docker compose -f docker/docker-compose.yml up --build
 ```
 
-See [`docs/setup.md`](docs/setup.md) for env details.
+## Strategies shipped
 
----
+| Name           | Family          | Idea                                                                          |
+| -------------- | --------------- | ----------------------------------------------------------------------------- |
+| `ema_trend`    | trend           | Long when fast EMA > slow EMA and slope is up; ATR-sized stops / take-profits |
+| `rsi_meanrev`  | mean reversion  | Counter-trend RSI extremes, gated by trend distance                           |
+| `breakout`     | breakout        | Donchian breakout after Bollinger compression                                  |
+| `vol_regime`   | regime          | Long only when realized vol is in a healthy band                              |
+| `ensemble`     | ensemble        | Confidence-weighted vote across all members; adaptive Sharpe weights          |
 
-## Directory map
+## Live trading safety
 
-```
-apps/
-  api/        # Express HTTP API (intake, advance, approvals, connectors)
-  worker/     # Long-running polling worker (same deps as API)
-  dashboard/  # placeholder for a UI
+Live trading is locked by FOUR independent gates. ALL must be true for any live
+order to be considered:
 
-packages/
-  shared/              # Zod schemas, IDs, errors, risk levels, enums
-  connectors/core/     # Connector interface + registry + BaseConnector
-  connectors/{gmail,gcal,notion,github,supabase,mcp,browser}
-  prompts/             # Every Claude prompt, with versioned IDs
-  planner/             # Planner, Claude client (real + scripted), budget
-  policies/            # Policy engine, default bundle, approval store
-  memory/              # Memory store with tag + text scoring
-  state/               # Task/Step stores (in-memory + Postgres) + schema
-  telemetry/           # Logger, metrics, trace recorder
-  orchestrator/        # State machine, control loop, worker, intake
-  agents/{integration,execution,validation,recovery,security,browser,planning}
+1. `configs/live.yaml: locked: false`
+2. `SNIPER_EXCHANGE_API_KEY` + `SNIPER_EXCHANGE_API_SECRET` set in environment
+3. Governance live-readiness score ≥ 80
+4. Explicit human unlock via `POST /api/live/unlock` with confirm string
+   `I_ACCEPT_LIVE_RISK`
 
-examples/run-sample-task.ts   # Full in-memory lifecycle demo
-tests/                        # Vitest suite (schemas, registry, planner,
-                              # policies, orchestrator, state machine)
-infra/docker-compose.yml      # Postgres + Redis for local dev
-scripts/{migrate,reset-db}.ts
-```
+Even when all four pass, **this build ships without any code that places live
+orders**. `LiveGate.is_unlocked()` is the chokepoint a future executor would
+have to call through — it is the only place to flip from research/paper to
+live execution.
 
----
+See [docs/LIVE_SAFETY_RULES.md](docs/LIVE_SAFETY_RULES.md).
 
-## Docs
+## Documentation
 
-- [`docs/architecture.md`](docs/architecture.md) — control loop, state machines, agent responsibilities
-- [`docs/setup.md`](docs/setup.md) — env vars, DB, Docker, running
-- [`docs/connectors.md`](docs/connectors.md) — shipped connectors, transport preference
-- [`docs/adding-a-connector.md`](docs/adding-a-connector.md) — writing your own
-- [`docs/policies.md`](docs/policies.md) — policy engine + approval floors
-- [`docs/approvals.md`](docs/approvals.md) — human-in-the-loop lifecycle
-- [`docs/limitations.md`](docs/limitations.md) — honest edges and todos
-
----
-
-## Philosophy
-
-1. **Claude for reasoning. Deterministic code for everything else.** Policy, retries, scoring, validation of obvious shapes — none of these need a model.
-2. **Every Claude call has a prompt version.** Prompts are code, not strings. The scripted test client keys on prompt versions so changes break tests, not production.
-3. **State is explicit.** The state graph lives in one file. The task schema is one file. The step schema is one file. No hidden implicit states.
-4. **Secrets never hit the model.** `redact()` walks every payload before it goes to Claude or to audit logs.
-5. **No browser-by-default.** Browser automation is a last-resort capability, not a prime mover. The registry scores MCP/API candidates above it by design.
+- [QUICKSTART](docs/QUICKSTART.md)
+- [ARCHITECTURE](docs/ARCHITECTURE.md)
+- [API_DOCS](docs/API_DOCS.md)
+- [LIVE_SAFETY_RULES](docs/LIVE_SAFETY_RULES.md)
+- [NEXT_STEPS](docs/NEXT_STEPS.md)

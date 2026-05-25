@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  platform:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: snipervrt-btc:latest
+    ports:
+      - "8000:8000"
+    environment:
+      SNIPER_LOG_LEVEL: INFO
+      # Do NOT bake real keys into the image. Use an .env file instead.
+    env_file:
+      - ../.env
+    volumes:
+      - ../runtime_state:/app/runtime_state
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+    restart: unless-stopped
