@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SniperVRT — BTC AI Trading Platform</title>
+<link rel="stylesheet" href="/static/style.css" />
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▲</span>
+      <span class="brand-text">SniperVRT</span>
+      <span class="brand-sub">BTC AI Trading Platform</span>
+    </div>
+    <div class="status-pills">
+      <span class="pill" :class="status?.live?.locked_config ? 'pill-locked' : 'pill-unlocked'">
+        LIVE {{ status?.live?.locked_config ? 'LOCKED' : 'CFG-UNLOCKED' }}
+      </span>
+      <span class="pill" :class="status?.paper?.running ? 'pill-on' : 'pill-off'">
+        PAPER {{ status?.paper?.running ? 'RUNNING' : 'STOPPED' }}
+      </span>
+      <span class="pill pill-neutral">{{ status?.paper?.regime?.regime || '—' }}</span>
+      <span class="pill pill-neutral">BTC ${{ formatNumber(status?.paper?.last_price) }}</span>
+    </div>
+    <nav class="nav">
+      <button v-for="t in tabs" :key="t.id" @click="active = t.id"
+              :class="{active: active === t.id}">{{ t.label }}</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- HOME -->
+    <section v-if="active === 'home'" class="grid grid-3">
+      <div class="card kpi">
+        <div class="kpi-label">Equity</div>
+        <div class="kpi-value">${{ formatNumber(status?.paper?.equity, 2) }}</div>
+        <div class="kpi-sub">Start: ${{ formatNumber(status?.paper?.starting_equity, 2) }}</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Daily PnL</div>
+        <div class="kpi-value" :class="(status?.paper?.daily_pnl || 0) >= 0 ? 'pos' : 'neg'">
+          ${{ formatNumber(status?.paper?.daily_pnl, 2) }}
+        </div>
+        <div class="kpi-sub">Realized: ${{ formatNumber(status?.paper?.realized_pnl, 2) }}</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Open Positions</div>
+        <div class="kpi-value">{{ status?.paper?.open_positions?.length || 0 }}</div>
+        <div class="kpi-sub">Strategy: {{ status?.paper?.active_strategy || '—' }}</div>
+      </div>
+
+      <div class="card kpi">
+        <div class="kpi-label">Live Readiness</div>
+        <div class="kpi-value">{{ readiness?.score?.toFixed(1) ?? '—' }}/100</div>
+        <div class="kpi-sub">{{ readiness?.recommendation || 'stay_paper' }}</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Data Quality</div>
+        <div class="kpi-value">{{ ((status?.data_quality?.coverage_pct || 0) * 100).toFixed(1) }}%</div>
+        <div class="kpi-sub">{{ status?.data_quality?.candle_count || 0 }} candles</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">System</div>
+        <div class="kpi-value">{{ status?.mode || '—' }}</div>
+        <div class="kpi-sub">Kill switch: {{ status?.kill_switch ? 'ON' : 'off' }}</div>
+      </div>
+
+      <div class="card span-3">
+        <h3>Recent events</h3>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Message</th></tr></thead>
+          <tbody><tr v-for="e in events.slice(0, 12)" :key="e.id">
+            <td>{{ formatTs(e.ts) }}</td>
+            <td><span class="badge" :class="'lvl-' + e.level">{{ e.level }}</span></td>
+            <td>{{ e.category }}</td>
+            <td class="truncate">{{ e.message }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- MARKET DATA -->
+    <section v-if="active === 'data'" class="grid">
+      <div class="card">
+        <div class="row between">
+          <h3>Market data ({{ status?.config?.symbol }} {{ status?.config?.timeframe }})</h3>
+          <button @click="refreshData()">↻ Refresh dataset</button>
+        </div>
+        <div class="row gap">
+          <div>Candles: <b>{{ status?.data_quality?.candle_count }}</b></div>
+          <div>Missing: <b>{{ status?.data_quality?.missing_candles }}</b></div>
+          <div>Coverage: <b>{{ ((status?.data_quality?.coverage_pct || 0) * 100).toFixed(2) }}%</b></div>
+          <div>Last price: <b>${{ formatNumber(status?.paper?.last_price) }}</b></div>
+          <div>Regime: <b>{{ status?.paper?.regime?.regime }}</b></div>
+        </div>
+        <canvas ref="priceChart" height="80"></canvas>
+      </div>
+    </section>
+
+    <!-- STRATEGY LAB -->
+    <section v-if="active === 'strategies'" class="grid grid-2">
+      <div class="card span-2">
+        <h3>Strategies</h3>
+        <table class="t">
+          <thead><tr><th>Name</th><th>Family</th><th>Default params</th><th></th></tr></thead>
+          <tbody><tr v-for="s in strategies" :key="s.name">
+            <td><b>{{ s.name }}</b></td>
+            <td>{{ s.family }}</td>
+            <td><code class="codeline">{{ JSON.stringify(s.default_params) }}</code></td>
+            <td>
+              <button @click="setActiveStrategy(s.name)"
+                      :class="{primary: status?.paper?.active_strategy === s.name}">
+                {{ status?.paper?.active_strategy === s.name ? '✓ Active' : 'Make active' }}
+              </button>
+              <button @click="quickBacktest(s.name)">Backtest</button>
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card span-2">
+        <h3>Run a tournament</h3>
+        <p class="muted">Runs every strategy on the current dataset, ranks by Sharpe, and persists results.</p>
+        <button class="primary" @click="runTournament()">▶ Run tournament</button>
+        <div v-if="tournament">
+          <h4>Leaderboard</h4>
+          <table class="t">
+            <thead><tr><th>#</th><th>Strategy</th><th>Sharpe</th><th>Return</th><th>Max DD</th><th>Win%</th><th>Trades</th></tr></thead>
+            <tbody><tr v-for="(row, i) in tournament.leaderboard" :key="row.strategy">
+              <td>{{ i + 1 }}</td>
+              <td>{{ row.strategy }}</td>
+              <td>{{ row.sharpe?.toFixed(3) }}</td>
+              <td :class="row.return_pct >= 0 ? 'pos' : 'neg'">{{ (row.return_pct * 100).toFixed(2) }}%</td>
+              <td class="neg">{{ (row.max_dd * 100).toFixed(2) }}%</td>
+              <td>{{ (row.win_rate * 100).toFixed(1) }}%</td>
+              <td>{{ row.trades }}</td>
+            </tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- BACKTESTS -->
+    <section v-if="active === 'backtest'" class="grid">
+      <div class="card">
+        <h3>Run a backtest</h3>
+        <div class="row gap wrap">
+          <label>Strategy
+            <select v-model="bt.strategy_type">
+              <option v-for="s in strategies" :key="s.name" :value="s.name">{{ s.name }}</option>
+            </select>
+          </label>
+          <label>Limit (candles)
+            <input type="number" v-model.number="bt.limit" min="100" max="20000" />
+          </label>
+          <label>Starting equity
+            <input type="number" v-model.number="bt.starting_equity" min="100" step="100" />
+          </label>
+          <label>Allow short
+            <input type="checkbox" v-model="bt.allow_short" />
+          </label>
+          <button class="primary" @click="runBacktest()" :disabled="bt.loading">
+            {{ bt.loading ? '…running' : '▶ Run' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="card" v-if="bt.last">
+        <h3>Result — {{ bt.last.strategy_name || bt.strategy_type }}</h3>
+        <div class="grid grid-4">
+          <div class="kpi small"><div class="kpi-label">Return</div><div class="kpi-value" :class="bt.last.total_return_pct >= 0 ? 'pos' : 'neg'">{{ (bt.last.total_return_pct * 100).toFixed(2) }}%</div></div>
+          <div class="kpi small"><div class="kpi-label">Sharpe</div><div class="kpi-value">{{ bt.last.sharpe.toFixed(3) }}</div></div>
+          <div class="kpi small"><div class="kpi-label">Max DD</div><div class="kpi-value neg">{{ (bt.last.max_drawdown_pct * 100).toFixed(2) }}%</div></div>
+          <div class="kpi small"><div class="kpi-label">Win rate</div><div class="kpi-value">{{ (bt.last.win_rate * 100).toFixed(1) }}%</div></div>
+          <div class="kpi small"><div class="kpi-label">Profit factor</div><div class="kpi-value">{{ bt.last.profit_factor.toFixed(3) }}</div></div>
+          <div class="kpi small"><div class="kpi-label">Trades</div><div class="kpi-value">{{ bt.last.num_trades }}</div></div>
+          <div class="kpi small"><div class="kpi-label">Avg trade</div><div class="kpi-value">{{ (bt.last.avg_trade_pct * 100).toFixed(3) }}%</div></div>
+          <div class="kpi small"><div class="kpi-label">Expectancy</div><div class="kpi-value">${{ bt.last.expectancy.toFixed(2) }}</div></div>
+        </div>
+        <canvas ref="backtestChart" height="80"></canvas>
+        <h4>Last trades</h4>
+        <table class="t">
+          <thead><tr><th>Open</th><th>Close</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Ret%</th><th>Reason</th></tr></thead>
+          <tbody><tr v-for="t in (bt.last.trades || []).slice(-25).reverse()" :key="t.open_ts + '-' + t.close_ts">
+            <td>{{ formatTs(t.open_ts) }}</td><td>{{ formatTs(t.close_ts) }}</td>
+            <td>{{ t.side }}</td><td>{{ formatNumber(t.entry) }}</td><td>{{ formatNumber(t.exit) }}</td>
+            <td :class="t.pnl >= 0 ? 'pos' : 'neg'">${{ t.pnl.toFixed(2) }}</td>
+            <td :class="t.ret_pct >= 0 ? 'pos' : 'neg'">{{ (t.ret_pct * 100).toFixed(2) }}%</td>
+            <td>{{ t.reason }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Past runs</h3>
+        <table class="t">
+          <thead><tr><th>ID</th><th>Strategy</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Trades</th><th>Created</th></tr></thead>
+          <tbody><tr v-for="r in backtestRuns" :key="r.id">
+            <td>{{ r.id }}</td><td>{{ r.strategy_name }}</td>
+            <td :class="r.total_return_pct >= 0 ? 'pos' : 'neg'">{{ (r.total_return_pct * 100).toFixed(2) }}%</td>
+            <td>{{ r.sharpe.toFixed(3) }}</td>
+            <td class="neg">{{ (r.max_drawdown_pct * 100).toFixed(2) }}%</td>
+            <td>{{ r.num_trades }}</td>
+            <td class="muted">{{ r.created_at }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- PAPER -->
+    <section v-if="active === 'paper'" class="grid grid-2">
+      <div class="card span-2">
+        <div class="row between">
+          <h3>Paper trading runtime</h3>
+          <div class="row gap">
+            <button @click="paperTick()">Tick once</button>
+            <button v-if="!status?.paper?.running" class="primary" @click="paperStart()">▶ Start</button>
+            <button v-else class="danger" @click="paperStop()">■ Stop</button>
+            <button @click="paperReset()">↺ Reset</button>
+          </div>
+        </div>
+        <canvas ref="paperChart" height="90"></canvas>
+      </div>
+
+      <div class="card">
+        <h3>Open positions</h3>
+        <table class="t">
+          <thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>Entry</th><th>Stop</th><th>TP</th><th>Unrealized</th></tr></thead>
+          <tbody><tr v-for="p in status?.paper?.open_positions || []" :key="p.id">
+            <td>{{ p.symbol }}</td><td><span :class="p.side === 'long' ? 'pos' : 'neg'">{{ p.side }}</span></td>
+            <td>{{ p.size }}</td><td>${{ formatNumber(p.entry) }}</td>
+            <td>${{ formatNumber(p.stop) }}</td><td>${{ formatNumber(p.tp) }}</td>
+            <td :class="p.unrealized >= 0 ? 'pos' : 'neg'">${{ formatNumber(p.unrealized, 2) }}</td>
+          </tr><tr v-if="!status?.paper?.open_positions?.length"><td colspan="7" class="muted">no open positions</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Recent paper trades</h3>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Side</th><th>Price</th><th>Size</th><th>PnL</th><th>Reason</th></tr></thead>
+          <tbody><tr v-for="t in paperTrades" :key="t.id">
+            <td>{{ formatTs(t.ts) }}</td><td>{{ t.side }}</td>
+            <td>${{ formatNumber(t.price) }}</td><td>{{ t.size }}</td>
+            <td :class="t.pnl >= 0 ? 'pos' : 'neg'">${{ formatNumber(t.pnl, 2) }}</td>
+            <td>{{ t.reason }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LIVE -->
+    <section v-if="active === 'live'" class="grid grid-2">
+      <div class="card span-2 danger-border">
+        <h3>⚠ Live trading (LOCKED by default)</h3>
+        <p>Live execution is gated by FOUR independent locks. ALL must be true before any live order could be considered:</p>
+        <ul>
+          <li>configs/live.yaml <code>locked: false</code> — currently <b>{{ liveStatus?.locked_config ? 'LOCKED' : 'unlocked' }}</b></li>
+          <li>API keys present in env — currently <b>{{ liveStatus?.has_api_keys ? 'YES' : 'NO' }}</b></li>
+          <li>Governance readiness ≥ 80 — currently <b>{{ liveStatus?.live_readiness_score?.toFixed(1) }}</b></li>
+          <li>Human unlock (this UI) — currently <b>{{ liveStatus?.human_unlocked ? 'UNLOCKED' : 'LOCKED' }}</b></li>
+        </ul>
+        <p class="muted">Even when all four are true, this build ships without any code that actually places live orders — the LiveGate is the chokepoint a future executor must call through.</p>
+        <div class="row gap">
+          <input v-model="unlock.reason" placeholder="reason (required)" style="flex:1" />
+          <input v-model="unlock.confirm" placeholder="type I_ACCEPT_LIVE_RISK" style="flex:1" />
+          <button class="danger" @click="liveUnlock()">Request human unlock</button>
+          <button @click="liveRelock()">Re-lock</button>
+          <button class="danger" @click="emergency()">EMERGENCY SHUTDOWN</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Live gate status</h3>
+        <pre>{{ liveStatus }}</pre>
+      </div>
+      <div class="card">
+        <h3>Readiness evidence</h3>
+        <pre>{{ readiness }}</pre>
+      </div>
+    </section>
+
+    <!-- WALLET -->
+    <section v-if="active === 'wallet'" class="grid">
+      <div class="card">
+        <h3>Wallet / account</h3>
+        <p>This build does not connect to a live wallet. To prepare for the future:</p>
+        <ol>
+          <li>Set <code>SNIPER_EXCHANGE_API_KEY</code> and <code>SNIPER_EXCHANGE_API_SECRET</code> in <code>.env</code>.</li>
+          <li>Choose exchange in <code>configs/live.yaml</code> (default: binance, sandbox: true).</li>
+          <li>Keep <code>locked: true</code> until governance approves.</li>
+        </ol>
+        <p>Secrets are never read from the repo and never printed to logs.</p>
+        <table class="t">
+          <thead><tr><th>Field</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>API key present</td><td>{{ liveStatus?.has_api_keys ? 'yes' : 'no' }}</td></tr>
+            <tr><td>Sandbox</td><td>{{ liveStatus?.sandbox ? 'yes' : 'no' }}</td></tr>
+            <tr><td>Exchange</td><td>{{ liveStatus?.exchange }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- GOVERNANCE -->
+    <section v-if="active === 'governance'" class="grid">
+      <div class="card">
+        <div class="row between">
+          <h3>Governance / council</h3>
+          <button class="primary" @click="runValidation()">▶ Run validation</button>
+        </div>
+        <p class="muted">Generates council_decision.json, live_readiness_report.json, risk_report.json, paper_summary.json, strategy_scoreboard.json.</p>
+        <pre>{{ council }}</pre>
+      </div>
+      <div class="card">
+        <h3>Recent decisions</h3>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Category</th><th>Decision</th><th>Score</th><th>Rationale</th></tr></thead>
+          <tbody><tr v-for="d in decisions" :key="d.id">
+            <td>{{ formatTs(d.ts) }}</td><td>{{ d.category }}</td>
+            <td><b>{{ d.decision }}</b></td><td>{{ d.live_readiness_score?.toFixed(1) }}</td>
+            <td class="truncate">{{ d.rationale }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- REPORTS -->
+    <section v-if="active === 'reports'" class="grid">
+      <div class="card">
+        <h3>Reports</h3>
+        <table class="t">
+          <thead><tr><th>Name</th><th>Bytes</th><th>Modified</th><th></th></tr></thead>
+          <tbody><tr v-for="r in reports" :key="r.name">
+            <td>{{ r.name }}</td><td>{{ r.bytes }}</td><td>{{ formatTs(r.mtime) }}</td>
+            <td><button @click="viewReport(r.name)">View</button></td>
+          </tr></tbody>
+        </table>
+        <pre v-if="reportBody">{{ reportBody }}</pre>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section v-if="active === 'settings'" class="grid">
+      <div class="card">
+        <h3>Settings (read-only snapshot)</h3>
+        <p class="muted">Edit configs in <code>configs/*.yaml</code>. Hot reload with the button below.</p>
+        <button @click="reloadSettings()">↻ Reload config from disk</button>
+        <pre>{{ settings }}</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>LIVE LOCK ENFORCED</span>
+    <span>Mode: {{ status?.mode }}</span>
+    <span>Last refresh: {{ lastRefreshLabel }}</span>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+risk:
+  max_position_size_pct: 0.10
+  max_open_positions: 1
+  max_daily_loss_pct: 0.03
+  max_total_drawdown_pct: 0.20
+  consecutive_loss_cooldown: 3
+  min_confidence: 0.55
+  volatility_shutdown_atr_pct: 0.08
+  min_data_quality: 0.95

@@ -28,3 +28,19 @@ snipervrt.bundle
 snipervrt-source.tar.gz
 snipervrt-source.zip
 bundle.txt
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Platform runtime
+runtime_state/*.db
+runtime_state/*.db-*
+data/candles/
+logs/*.log
+reports/*.json
+reports/*.csv
+
