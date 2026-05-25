@@ -13,6 +13,7 @@ from backend.app.core.config import get_config
 from backend.app.core.db import session_scope
 from backend.app.data import ensure_dataset, load_candles, data_quality
 from backend.app.execution.simulator import simulate_fill
+from backend.app.memory.trace import trace as _trace
 from backend.app.models import (
     PaperAccount, Position, Trade, EventLog, StrategyConfig,
 )
@@ -214,8 +215,33 @@ class PaperRuntime:
             if allow_check.allowed and len(open_positions) == 0:
                 self._open_position(s, acc, last_price, sig.side, allow_check, ts)
                 decision_payload["opened"] = True
+                try:
+                    _trace("open", f"{self._active_strategy_name}:{sig.side}",
+                           reason_chain=[
+                               f"signal={sig.side}",
+                               f"confidence={sig.confidence:.3f}",
+                               f"stop_pct={sig.stop_pct or 0:.4f}",
+                               f"tp_pct={sig.take_profit_pct or 0:.4f}",
+                               f"size={allow_check.size_base}",
+                               f"price={last_price}",
+                           ],
+                           inputs={"signal": sig.side, "confidence": sig.confidence,
+                                   "blocks": allow_check.blocks},
+                           outputs={"size_base": allow_check.size_base,
+                                    "stop_price": allow_check.stop_price,
+                                    "take_profit": allow_check.take_profit})
+                except Exception:
+                    pass
             else:
                 decision_payload["opened"] = False
+                if sig.side in ("long", "short"):
+                    try:
+                        _trace("block", f"{self._active_strategy_name}:{sig.side}",
+                               reason_chain=[f"block:{b}" for b in allow_check.blocks],
+                               inputs={"signal": sig.side, "confidence": sig.confidence},
+                               outputs={"blocks": allow_check.blocks})
+                    except Exception:
+                        pass
 
             # Apply halt rules persistently
             if "DAILY_LOSS" in ",".join(allow_check.blocks):
@@ -276,6 +302,17 @@ class PaperRuntime:
         acc.cash += net
         acc.fees_paid += fill.fee
         acc.realized_pnl += net
+        try:
+            _trace("close", f"{p.strategy}:{p.side}",
+                   reason_chain=[
+                       f"reason={reason}", f"entry={p.entry_price}",
+                       f"exit={fill.fill_price}", f"pnl={round(net, 4)}",
+                   ],
+                   inputs={"position_id": p.id, "last_price": last_price,
+                           "stop": p.stop_price, "take_profit": p.take_profit},
+                   outputs={"pnl": round(net, 4), "fee": fill.fee})
+        except Exception:
+            pass
         p.is_open = False
         p.closed_at = ts
         p.exit_price = fill.fill_price

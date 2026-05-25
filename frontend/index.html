@@ -30,6 +30,11 @@
       <button v-for="t in tabs" :key="t.id" @click="active = t.id"
               :class="{active: active === t.id}">{{ t.label }}</button>
     </nav>
+    <div class="scheduler-pill" v-if="scheduler">
+      <span class="pill" :class="scheduler?.running ? 'pill-on' : 'pill-off'">
+        RESEARCH {{ scheduler?.running ? 'RUNNING' : 'STOPPED' }}
+      </span>
+    </div>
   </header>
 
   <main>
@@ -340,6 +345,235 @@
           </tr></tbody>
         </table>
         <pre v-if="reportBody">{{ reportBody }}</pre>
+      </div>
+    </section>
+
+    <!-- INTELLIGENCE -->
+    <section v-if="active === 'intel'" class="grid grid-2">
+      <div class="card">
+        <div class="row between">
+          <h3>News intelligence</h3>
+          <div class="row gap">
+            <button @click="newsIngest()">↻ Ingest</button>
+            <button @click="newsAttribute()">Attribute</button>
+          </div>
+        </div>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Topic</th><th>Sent</th><th>Imp</th><th>Headline</th><th>±1h</th></tr></thead>
+          <tbody><tr v-for="n in news.slice(0, 30)" :key="n.id">
+            <td class="muted">{{ formatTs(n.ts) }}</td>
+            <td><span class="badge">{{ n.topic }}</span></td>
+            <td :class="n.sentiment > 0 ? 'pos' : (n.sentiment < 0 ? 'neg' : '')">{{ n.sentiment.toFixed(2) }}</td>
+            <td>{{ n.importance.toFixed(2) }}</td>
+            <td class="truncate">{{ n.headline }}</td>
+            <td :class="(n.react_1h || 0) > 0 ? 'pos' : ((n.react_1h || 0) < 0 ? 'neg' : 'muted')">
+              {{ n.react_1h !== null && n.react_1h !== undefined ? (n.react_1h * 100).toFixed(2) + '%' : '—' }}
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Sentiment</h3>
+          <button @click="sentimentSnap()">Snapshot now</button>
+        </div>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Source</th><th>Score</th><th>Note</th></tr></thead>
+          <tbody><tr v-for="s in sentiment.slice(0, 20)" :key="s.id">
+            <td class="muted">{{ formatTs(s.ts) }}</td>
+            <td>{{ s.source }}</td>
+            <td :class="s.score > 0 ? 'pos' : 'neg'">{{ s.score.toFixed(3) }}</td>
+            <td class="truncate">{{ s.notes }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Micro-structure signals</h3>
+          <button @click="microCollect()">Collect now</button>
+        </div>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Name</th><th>Value</th><th>Z-score</th></tr></thead>
+          <tbody><tr v-for="m in micro.slice(0, 20)" :key="m.id">
+            <td class="muted">{{ formatTs(m.ts) }}</td>
+            <td>{{ m.name }}</td>
+            <td>{{ formatNumber(m.value, 4) }}</td>
+            <td :class="(m.zscore || 0) > 2 ? 'neg' : ((m.zscore || 0) < -2 ? 'neg' : '')">
+              {{ m.zscore !== null ? m.zscore.toFixed(2) : '—' }}
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Regime v2 snapshots</h3>
+          <button @click="regimeSnap()">Snapshot now</button>
+        </div>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Regime</th><th>Confidence</th><th>Trend</th><th>ATR%</th><th>BB w%</th></tr></thead>
+          <tbody><tr v-for="r in regimes.slice(0, 20)" :key="r.id">
+            <td class="muted">{{ formatTs(r.ts) }}</td>
+            <td><b>{{ r.regime }}</b></td>
+            <td>{{ r.confidence.toFixed(2) }}</td>
+            <td>{{ (r.features?.trend_score || 0).toFixed(3) }}</td>
+            <td>{{ ((r.features?.atr_pct || 0) * 100).toFixed(2) }}%</td>
+            <td>{{ ((r.features?.bb_width_pct || 0) * 100).toFixed(0) }}%</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- RESEARCH -->
+    <section v-if="active === 'research'" class="grid">
+      <div class="card">
+        <div class="row between">
+          <h3>Research agents</h3>
+          <div class="row gap">
+            <button class="primary" @click="agentsRunAll()">▶ Run all agents</button>
+            <button @click="edgesDiscover()">▶ Discover edges</button>
+          </div>
+        </div>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Agent</th><th>Category</th><th>Score</th><th>Title</th></tr></thead>
+          <tbody><tr v-for="f in findings.slice(0, 25)" :key="f.id">
+            <td class="muted">{{ formatTs(f.ts) }}</td>
+            <td>{{ f.agent }}</td>
+            <td><span class="badge">{{ f.category }}</span></td>
+            <td>
+              <span :class="f.score >= 0.7 ? 'pos' : (f.score >= 0.5 ? '' : 'muted')">
+                {{ f.score.toFixed(2) }}
+              </span>
+            </td>
+            <td class="truncate">{{ f.title }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Edge discovery results</h3>
+        <p class="muted">FDR-corrected statistical tests of features vs forward returns. Acceptance requires sample size, effect, p_adj &lt; 0.10, stability ≥ 0.5.</p>
+        <table class="t">
+          <thead><tr><th>Name</th><th>n</th><th>Effect</th><th>p_adj</th><th>Stability</th><th>Status</th></tr></thead>
+          <tbody><tr v-for="e in edges.slice(0, 25)" :key="e.id">
+            <td class="truncate">{{ e.name }}</td>
+            <td>{{ e.n }}</td>
+            <td :class="e.effect_size > 0 ? 'pos' : 'neg'">{{ (e.effect_size * 100).toFixed(4) }}%</td>
+            <td>{{ e.p_value_adj.toFixed(3) }}</td>
+            <td>{{ e.stability.toFixed(2) }}</td>
+            <td>
+              <span :class="e.accepted ? 'pos' : 'muted'">
+                {{ e.accepted ? '✓ accepted' : e.rejection_reason }}
+              </span>
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Walk-forward validation</h3>
+          <div class="row gap">
+            <select v-model="wf.strategy_type">
+              <option v-for="s in strategies" :key="s.name" :value="s.name">{{ s.name }}</option>
+            </select>
+            <label>Window <input type="number" v-model.number="wf.window_size" min="100" max="3000" /></label>
+            <label>Step <input type="number" v-model.number="wf.step_size" min="20" max="1000" /></label>
+            <button class="primary" @click="runWalkForward()" :disabled="wf.loading">
+              {{ wf.loading ? '…' : '▶ Run' }}
+            </button>
+          </div>
+        </div>
+        <table class="t">
+          <thead><tr><th>Strategy</th><th>Window/Step</th><th>Mean Sharpe</th><th>+Sharpe frac</th><th>Worst DD</th><th>Stability</th><th>Status</th></tr></thead>
+          <tbody><tr v-for="r in walkForwards.slice(0, 10)" :key="r.id">
+            <td>{{ r.strategy_type }}</td>
+            <td class="muted">{{ r.window_size }}/{{ r.step_size }}</td>
+            <td>{{ r.aggregate?.mean_sharpe?.toFixed(3) }}</td>
+            <td>{{ ((r.aggregate?.frac_positive_sharpe || 0) * 100).toFixed(0) }}%</td>
+            <td class="neg">{{ ((r.aggregate?.worst_drawdown || 0) * 100).toFixed(2) }}%</td>
+            <td>{{ r.stability.toFixed(2) }}</td>
+            <td><span :class="r.accepted ? 'pos' : 'muted'">{{ r.accepted ? '✓ accepted' : 'rejected' }}</span></td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Monte Carlo (trade bootstrap)</h3>
+          <div class="row gap">
+            <label>Backtest run id <input type="number" v-model.number="mc.run_id" /></label>
+            <label>Samples <input type="number" v-model.number="mc.n_samples" /></label>
+            <button class="primary" @click="runMonteCarlo()" :disabled="mc.loading">{{ mc.loading ? '…' : '▶ Run' }}</button>
+          </div>
+        </div>
+        <table class="t">
+          <thead><tr><th>Source run</th><th>Median ret</th><th>5% / 95%</th><th>P(loss &gt; 20%)</th><th>Samples</th></tr></thead>
+          <tbody><tr v-for="m in monteCarlos.slice(0, 10)" :key="m.id">
+            <td>{{ m.source_run_id }}</td>
+            <td>{{ ((m.metrics?.median_return_pct || 0) * 100).toFixed(2) }}%</td>
+            <td>
+              <span class="neg">{{ ((m.metrics?.return_pct?.p5 || 0) * 100).toFixed(1) }}%</span> /
+              <span class="pos">{{ ((m.metrics?.return_pct?.p95 || 0) * 100).toFixed(1) }}%</span>
+            </td>
+            <td class="neg">{{ ((m.metrics?.prob_loss_gt_20pct || 0) * 100).toFixed(1) }}%</td>
+            <td>{{ m.metrics?.n_samples }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>Research scheduler</h3>
+          <div class="row gap">
+            <button v-if="!scheduler?.running" class="primary" @click="schedStart()">▶ Start</button>
+            <button v-else class="danger" @click="schedStop()">■ Stop</button>
+          </div>
+        </div>
+        <table class="t">
+          <thead><tr><th>Task</th><th>Interval</th><th>Runs</th><th>Errors</th><th>Last run</th><th>Next in</th><th></th></tr></thead>
+          <tbody><tr v-for="(t, name) in scheduler?.tasks || {}" :key="name">
+            <td><b>{{ name }}</b></td><td class="muted">{{ t.interval_s }}s</td>
+            <td>{{ t.runs }}</td>
+            <td :class="t.errors > 0 ? 'neg' : ''">{{ t.errors }}</td>
+            <td class="muted">{{ t.last_run ? formatTs(t.last_run) : '—' }}</td>
+            <td class="muted">{{ t.last_run ? t.next_run_in + 's' : '—' }}</td>
+            <td><button @click="schedForce(name)">Run now</button></td>
+          </tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- MEMORY -->
+    <section v-if="active === 'memory'" class="grid grid-2">
+      <div class="card">
+        <h3>Memory entries</h3>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Kind</th><th>Subject</th><th>Summary</th><th>Weight</th></tr></thead>
+          <tbody><tr v-for="m in memoryEntries.slice(0, 30)" :key="m.id">
+            <td class="muted">{{ formatTs(m.ts) }}</td>
+            <td><span class="badge" :class="'lvl-' + (m.kind === 'success' || m.kind === 'insight' ? 'info' : (m.kind === 'failure' ? 'error' : 'warn'))">{{ m.kind }}</span></td>
+            <td>{{ m.subject }}</td>
+            <td class="truncate">{{ m.summary }}</td>
+            <td>{{ m.weight.toFixed(2) }}</td>
+          </tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Decision traces (why)</h3>
+        <p class="muted">Every paper open / close / block records a reason chain so we can explain decisions.</p>
+        <table class="t">
+          <thead><tr><th>Time</th><th>Kind</th><th>Subject</th><th>Reason chain</th></tr></thead>
+          <tbody><tr v-for="t in traces.slice(0, 30)" :key="t.id">
+            <td class="muted">{{ formatTs(t.ts) }}</td>
+            <td><span class="badge">{{ t.kind }}</span></td>
+            <td>{{ t.subject }}</td>
+            <td class="truncate"><code class="codeline">{{ (t.reason_chain || []).join(' → ') }}</code></td>
+          </tr></tbody>
+        </table>
       </div>
     </section>
 

@@ -71,36 +71,77 @@ def _strategy_scoreboard() -> dict:
         } for r in runs]}
 
 
-def live_readiness_score() -> dict:
-    """A bounded 0..100 score quantifying whether the system is healthy enough to consider live.
+def _walk_forward_evidence() -> dict:
+    from backend.app.models import WalkForwardRun
+    with session_scope() as s:
+        rows = s.query(WalkForwardRun).order_by(WalkForwardRun.id.desc()).limit(20).all()
+    if not rows:
+        return {"count": 0, "max_stability": 0.0, "any_accepted": False}
+    return {
+        "count": len(rows),
+        "max_stability": max(r.stability for r in rows),
+        "any_accepted": any(r.accepted for r in rows),
+        "best": next(({"strategy_type": r.strategy_type,
+                       "aggregate": r.aggregate, "stability": r.stability}
+                      for r in rows if r.accepted), None),
+    }
 
-    Each criterion is gated: missing criteria score 0; we never claim readiness > 0
-    without actual paper-trade evidence.
+
+def _edge_evidence() -> dict:
+    from backend.app.models import EdgeCandidate
+    with session_scope() as s:
+        total = s.query(EdgeCandidate).count()
+        accepted = s.query(EdgeCandidate).filter(EdgeCandidate.accepted.is_(True)).count()
+    return {"total_tested": total, "accepted": accepted}
+
+
+def _agent_evidence() -> dict:
+    from backend.app.models import ResearchFinding
+    with session_scope() as s:
+        total = s.query(ResearchFinding).count()
+        high = s.query(ResearchFinding).filter(ResearchFinding.score >= 0.7).count()
+    return {"findings_total": total, "high_score": high}
+
+
+def _memory_warnings() -> dict:
+    from backend.app.models import MemoryEntry
+    with session_scope() as s:
+        warns = s.query(MemoryEntry).filter(MemoryEntry.kind.in_(["failure", "warning", "anomaly"])).count()
+    return {"warning_count": warns}
+
+
+def live_readiness_score() -> dict:
+    """A bounded 0..100 score. Phase 2 adds walk-forward stability, edge evidence,
+    research-agent breadth, and memory warnings into the calculation.
     """
     ps = _paper_summary()
     rr = _risk_report()
     ss = _strategy_scoreboard()
     dq = data_quality().to_dict()
+    wf = _walk_forward_evidence()
+    ed = _edge_evidence()
+    ag = _agent_evidence()
+    mem = _memory_warnings()
 
     score = 0.0
     reasons: list[str] = []
 
-    # Data quality (0–20)
+    # Data quality (0–15)
     if dq["candle_count"] >= 500 and dq["coverage_pct"] >= 0.95:
-        score += 20
+        score += 15
     else:
         reasons.append(f"data_quality_low:{dq['coverage_pct']:.3f}")
 
-    # Backtest evidence (0–30)
+    # Backtest evidence (0–20)
     top = ss["top"]
     if top:
         best = top[0]
         if best["sharpe"] >= 0.5:
-            score += 15
+            score += 10
         else:
             reasons.append(f"low_sharpe:{best['sharpe']}")
         if best["num_trades"] >= 20:
-            score += 10
+            score += 5
         else:
             reasons.append(f"few_backtest_trades:{best['num_trades']}")
         if best["max_drawdown_pct"] > -0.2:
@@ -110,30 +151,62 @@ def live_readiness_score() -> dict:
     else:
         reasons.append("no_backtest_runs")
 
-    # Paper-trade evidence (0–30)
-    if ps.get("present") and ps.get("num_trades", 0) >= 20:
+    # Walk-forward stability (0–15)
+    if wf["any_accepted"]:
         score += 10
+        if wf["max_stability"] >= 0.7:
+            score += 5
+        else:
+            reasons.append(f"walk_forward_stability:{wf['max_stability']:.2f}")
+    else:
+        reasons.append("no_walk_forward_accepted")
+
+    # Edge evidence (0–10)
+    if ed["accepted"] >= 1:
+        score += min(10, ed["accepted"] * 2)
+    else:
+        reasons.append(f"no_accepted_edges:{ed['total_tested']}_tested")
+
+    # Paper-trade evidence (0–20)
+    if ps.get("present") and ps.get("num_trades", 0) >= 20:
+        score += 5
         if ps.get("profit_factor", 0) >= 1.0:
             score += 10
         else:
             reasons.append(f"paper_profit_factor:{ps.get('profit_factor')}")
         if not ps.get("halted"):
-            score += 10
+            score += 5
         else:
             reasons.append(f"paper_halted:{ps.get('halt_reason')}")
     else:
         reasons.append(f"paper_trades_insufficient:{ps.get('num_trades', 0)}")
 
-    # Risk-rule integrity (0–20): observed risk blocks are healthy unless excessive
+    # Risk-rule integrity (0–10)
     blocks = rr["total_blocks"]
     if blocks >= 1:
-        score += 10  # risk engine is observably active
+        score += 5
     else:
         reasons.append("risk_engine_silent")
     if ps.get("present") and ps.get("num_trades", 0) > 0 and blocks < 10 * max(1, ps.get("num_trades", 1)):
-        score += 10
+        score += 5
     else:
         reasons.append("risk_block_ratio_high")
+
+    # Research breadth (0–10)
+    if ag["high_score"] >= 3:
+        score += 5
+    else:
+        reasons.append(f"research_high_score:{ag['high_score']}")
+    if ag["findings_total"] >= 10:
+        score += 5
+    else:
+        reasons.append(f"findings_too_few:{ag['findings_total']}")
+
+    # Penalize fresh warnings
+    if mem["warning_count"] > 0:
+        penalty = min(10, mem["warning_count"] * 0.5)
+        score -= penalty
+        reasons.append(f"memory_warnings:{mem['warning_count']}(-{penalty})")
 
     score = max(0.0, min(100.0, score))
     recommendation = "stay_paper"
@@ -149,6 +222,10 @@ def live_readiness_score() -> dict:
             "paper_summary": ps,
             "risk_report": rr,
             "strategy_scoreboard": ss,
+            "walk_forward": wf,
+            "edges": ed,
+            "agents": ag,
+            "memory_warnings": mem,
         },
         "reasons": reasons,
         "ts": _now(),

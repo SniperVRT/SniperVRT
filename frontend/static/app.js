@@ -22,6 +22,9 @@ createApp({
       { id: 'strategies', label: 'Strategies' },
       { id: 'backtest', label: 'Backtest' },
       { id: 'paper', label: 'Paper' },
+      { id: 'intel', label: 'Intelligence' },
+      { id: 'research', label: 'Research' },
+      { id: 'memory', label: 'Memory' },
       { id: 'live', label: 'Live (LOCKED)' },
       { id: 'wallet', label: 'Wallet' },
       { id: 'governance', label: 'Governance' },
@@ -42,6 +45,20 @@ createApp({
     const backtestRuns = ref([]);
     const paperTrades = ref([]);
     const tournament = ref(null);
+    // Phase 2
+    const news = ref([]);
+    const sentiment = ref([]);
+    const micro = ref([]);
+    const regimes = ref([]);
+    const findings = ref([]);
+    const edges = ref([]);
+    const walkForwards = ref([]);
+    const monteCarlos = ref([]);
+    const memoryEntries = ref([]);
+    const traces = ref([]);
+    const scheduler = ref(null);
+    const wf = reactive({ strategy_type: 'ema_trend', window_size: 500, step_size: 100, loading: false });
+    const mc = reactive({ run_id: 1, n_samples: 2000, loading: false });
     const lastRefresh = ref(0);
     const lastRefreshLabel = computed(() => {
       if (!lastRefresh.value) return '—';
@@ -73,19 +90,56 @@ createApp({
 
     async function refreshAll() {
       try {
-        const [st, str, ev, rd, ls] = await Promise.all([
+        const [st, str, ev, rd, ls, sc] = await Promise.all([
           api('/system/status'), api('/strategies'),
           api('/events?limit=50'),
           api('/governance/readiness').catch(() => null),
           api('/live/status'),
+          api('/intel/scheduler/status').catch(() => null),
         ]);
         status.value = st;
         strategies.value = str.strategies;
         events.value = ev.events;
         readiness.value = rd;
         liveStatus.value = ls;
+        scheduler.value = sc;
         lastRefresh.value = Date.now();
       } catch (e) { console.warn(e); }
+    }
+
+    async function refreshIntel() {
+      const [n, s, m, r] = await Promise.all([
+        api('/intel/news?limit=60'),
+        api('/intel/sentiment?limit=40'),
+        api('/intel/micro?limit=40'),
+        api('/intel/regime/history?limit=40'),
+      ]);
+      news.value = n.items;
+      sentiment.value = s.snapshots;
+      micro.value = m.signals;
+      regimes.value = r.regimes;
+    }
+
+    async function refreshResearch() {
+      const [f, e, w, mcr] = await Promise.all([
+        api('/intel/findings?limit=50'),
+        api('/intel/edges?limit=60'),
+        api('/intel/walk-forward?limit=20'),
+        api('/intel/monte-carlo?limit=20'),
+      ]);
+      findings.value = f.findings;
+      edges.value = e.edges;
+      walkForwards.value = w.runs;
+      monteCarlos.value = mcr.runs;
+    }
+
+    async function refreshMemory() {
+      const [m, t] = await Promise.all([
+        api('/intel/memory?limit=80'),
+        api('/intel/traces?limit=80'),
+      ]);
+      memoryEntries.value = m.entries;
+      traces.value = t.traces;
     }
 
     async function refreshBacktestRuns() {
@@ -157,6 +211,9 @@ createApp({
       if (tab === 'governance') refreshGovernance();
       if (tab === 'reports') refreshReports();
       if (tab === 'settings') refreshSettings();
+      if (tab === 'intel') refreshIntel();
+      if (tab === 'research') refreshResearch();
+      if (tab === 'memory') refreshMemory();
     });
 
     // Actions
@@ -226,6 +283,57 @@ createApp({
       refreshSettings();
     }
 
+    // Phase 2 actions
+    async function newsIngest() {
+      const r = await api('/intel/news/ingest', { method: 'POST' });
+      alert(`News: fetched ${r.fetched}, inserted ${r.inserted} from sources ${(r.sources || []).join(', ')}`);
+      refreshIntel();
+    }
+    async function newsAttribute() { await api('/intel/news/attribute', { method: 'POST' }); refreshIntel(); }
+    async function sentimentSnap() { await api('/intel/sentiment/snapshot', { method: 'POST' }); refreshIntel(); }
+    async function microCollect()  { await api('/intel/micro/collect', { method: 'POST' }); refreshIntel(); }
+    async function regimeSnap()    { await api('/intel/regime/snapshot', { method: 'POST' }); refreshIntel(); }
+    async function agentsRunAll()  {
+      const r = await api('/intel/agents/run-all', { method: 'POST' });
+      refreshResearch();
+      return r;
+    }
+    async function edgesDiscover() {
+      const r = await api('/intel/edges/discover', { method: 'POST' });
+      alert(`Edges tested ${r.tested}, accepted ${r.accepted}.`);
+      refreshResearch();
+    }
+    async function runWalkForward() {
+      wf.loading = true;
+      try {
+        await api('/intel/walk-forward/run', { method: 'POST', body: {
+          strategy_type: wf.strategy_type, params: {},
+          window_size: wf.window_size, step_size: wf.step_size,
+          starting_equity: 10000,
+        } });
+        refreshResearch();
+      } catch (e) { alert(e.message); }
+      finally { wf.loading = false; }
+    }
+    async function runMonteCarlo() {
+      mc.loading = true;
+      try {
+        await api('/intel/monte-carlo/run', { method: 'POST', body: {
+          run_id: mc.run_id, n_samples: mc.n_samples,
+        } });
+        refreshResearch();
+      } catch (e) { alert(e.message); }
+      finally { mc.loading = false; }
+    }
+    async function schedStart() { await api('/intel/scheduler/start', { method: 'POST' }); refreshAll(); }
+    async function schedStop()  { await api('/intel/scheduler/stop', { method: 'POST' }); refreshAll(); }
+    async function schedForce(name) {
+      await api(`/intel/scheduler/run/${name}`, { method: 'POST' });
+      refreshAll();
+      if (active.value === 'intel') refreshIntel();
+      if (active.value === 'research') refreshResearch();
+    }
+
     let timer;
     onMounted(async () => {
       await refreshAll();
@@ -237,10 +345,15 @@ createApp({
       tabs, active, status, readiness, liveStatus, strategies, events, decisions,
       reports, reportBody, settings, council, backtestRuns, paperTrades, tournament,
       bt, unlock, lastRefreshLabel,
+      news, sentiment, micro, regimes, findings, edges, walkForwards, monteCarlos,
+      memoryEntries, traces, scheduler, wf, mc,
       priceChart, backtestChart, paperChart,
       formatTs, formatNumber, refreshData, setActiveStrategy, quickBacktest,
       runBacktest, runTournament, paperStart, paperStop, paperTick, paperReset,
       runValidation, liveUnlock, liveRelock, emergency, viewReport, reloadSettings,
+      newsIngest, newsAttribute, sentimentSnap, microCollect, regimeSnap,
+      agentsRunAll, edgesDiscover, runWalkForward, runMonteCarlo,
+      schedStart, schedStop, schedForce,
       JSON,
     };
   },

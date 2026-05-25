@@ -11,11 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.api.intelligence_routes import router as intelligence_router
 from backend.app.api.router import api_router
 from backend.app.core.config import LOG_DIR, get_config, get_settings
 from backend.app.core.db import init_db
 from backend.app.data import ensure_dataset
 from backend.app.paper.runtime import get_runtime
+from backend.app.scheduler import get_scheduler
 
 
 def _setup_logging() -> None:
@@ -56,6 +58,10 @@ async def lifespan(app: FastAPI):
         get_runtime().stop()
     except Exception:
         pass
+    try:
+        get_scheduler().stop()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -71,6 +77,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router, prefix="/api")
+app.include_router(intelligence_router, prefix="/api")
 
 
 # Frontend SPA
