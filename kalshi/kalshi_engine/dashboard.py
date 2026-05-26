@@ -19,9 +19,12 @@ import streamlit as st
 
 from .config import get_settings
 from .db import connect, init_db, utc_now_iso
+from .ops.health import run_health_checks
 from .reports.daily import build_daily_report, render_daily_report_text
+from .risk import governance as gov
 from .risk import rules as risk_rules
 from .validation.calibration import calibration_report
+from .validation.drift import summary as drift_summary
 from .validation.metrics import performance_report
 
 st.set_page_config(page_title="Kalshi mispricing engine", layout="wide")
@@ -54,8 +57,21 @@ st.write(
 
 page = st.sidebar.radio(
     "Pages",
-    ["Signals", "Paper", "Rejections & Quality", "Calibration", "Daily report"],
+    [
+        "Signals", "Paper", "Rejections & Quality", "Calibration",
+        "Daily report", "News evidence", "Governance", "Health",
+        "Drift", "Live readiness",
+    ],
 )
+
+# Status strip — visible on every page.
+_locks = gov.active_locks(conn)
+_state = gov.compute_state(conn, settings)
+status_cols = st.columns(4)
+status_cols[0].metric("Live", "LOCKED" if (_locks or settings.execution_mode.value != "live") else "READY")
+status_cols[1].metric("Exposure", f"${_state.open_exposure_usd:.2f}")
+status_cols[2].metric("Drawdown", f"${_state.drawdown_usd:.2f}")
+status_cols[3].metric("Locks", str(len(_locks)))
 
 # -- Signals page ------------------------------------------------------------
 if page == "Signals":
@@ -209,5 +225,86 @@ elif page == "Calibration":
 elif page == "Daily report":
     rep = build_daily_report(conn)
     st.code(render_daily_report_text(rep))
+
+# -- News evidence -----------------------------------------------------------
+elif page == "News evidence":
+    st.subheader("Latest news items")
+    df_n = pd.read_sql_query(
+        """
+        SELECT id, source_name, title, ROUND(reliability_score,2) AS rel,
+               ROUND(freshness_score,2) AS fresh, published_at, item_url
+          FROM news_evidence
+         ORDER BY id DESC LIMIT 200
+        """, conn,
+    )
+    st.dataframe(df_n, use_container_width=True, hide_index=True)
+
+    st.subheader("Top market attachments")
+    df_a = pd.read_sql_query(
+        """
+        SELECT ea.ticker, ROUND(ea.relevance_score,2) AS score,
+               ea.matched_keywords, ne.title, ne.source_name, ea.attached_at
+          FROM evidence_attachments ea
+          JOIN news_evidence ne ON ne.id = ea.evidence_id
+         ORDER BY ea.relevance_score DESC, ea.attached_at DESC LIMIT 200
+        """, conn,
+    )
+    st.dataframe(df_a, use_container_width=True, hide_index=True)
+
+# -- Governance --------------------------------------------------------------
+elif page == "Governance":
+    st.subheader("Portfolio state")
+    st.json(gov.to_dict(_state))
+    st.subheader("Active locks")
+    if _locks:
+        st.dataframe(pd.DataFrame(_locks, columns=["lock", "reason"]),
+                     use_container_width=True, hide_index=True)
+    else:
+        st.success("no locks engaged")
+    st.subheader("Recent portfolio snapshots")
+    df_p = pd.read_sql_query(
+        "SELECT * FROM portfolio_state ORDER BY id DESC LIMIT 100", conn,
+    )
+    st.dataframe(df_p, use_container_width=True, hide_index=True)
+
+# -- Health ------------------------------------------------------------------
+elif page == "Health":
+    rep = run_health_checks(conn)
+    badge = {"ok": "green", "warn": "orange", "fail": "red"}[rep.overall]
+    st.markdown(f"**Overall:** :{badge}[{rep.overall.upper()}]")
+    st.dataframe(pd.DataFrame([c.to_dict() for c in rep.checks]),
+                 use_container_width=True, hide_index=True)
+
+# -- Drift -------------------------------------------------------------------
+elif page == "Drift":
+    st.subheader("Drift summary")
+    st.json(drift_summary(conn))
+    st.subheader("Recent drift reports")
+    df_d = pd.read_sql_query(
+        "SELECT * FROM drift_reports ORDER BY id DESC LIMIT 200", conn,
+    )
+    st.dataframe(df_d, use_container_width=True, hide_index=True)
+
+# -- Live readiness ----------------------------------------------------------
+elif page == "Live readiness":
+    rep = run_health_checks(conn)
+    drift = drift_summary(conn)
+    ready = (
+        rep.overall == "ok"
+        and not _locks
+        and settings.live_enabled
+        and not settings.live_dry_run
+        and settings.live_require_manual_approval
+    )
+    badge = "green" if ready else "red"
+    st.markdown(f"## :{badge}[{'LIVE_READY' if ready else 'LIVE_LOCKED'}]")
+    st.write({
+        "health": rep.overall,
+        "locks": [n for n, _ in _locks],
+        "live_enabled": settings.live_enabled,
+        "live_dry_run": settings.live_dry_run,
+        "manual_approval_required": settings.live_require_manual_approval,
+        "drift": drift,
+    })
 
 st.caption(f"refreshed {datetime.now(timezone.utc).isoformat()}")

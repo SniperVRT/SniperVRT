@@ -46,6 +46,23 @@ class Settings(BaseSettings):
     min_minutes_to_close: int = 15
     max_minutes_to_close: int = 60 * 24 * 30  # 30 days
 
+    # ---- Portfolio governance ----------------------------------------------
+    max_open_exposure_usd: float = 15.0           # sum of all open notional
+    max_category_exposure_usd: float = 10.0
+    max_strategy_exposure_usd: float = 10.0
+    max_portfolio_drawdown_usd: float = 25.0
+    max_data_staleness_minutes: int = 10
+    max_consecutive_losses: int = 2
+
+    # ---- Live execution ----------------------------------------------------
+    live_enabled: bool = False                    # MUST be true AND manual approve
+    live_dry_run: bool = True                     # preview only by default
+    live_require_manual_approval: bool = True
+
+    # ---- News ingestion ----------------------------------------------------
+    news_fetch_timeout_s: float = 10.0
+    news_max_items_per_feed: int = 50
+
     # ---- Storage / logging ---------------------------------------------------
     db_path: Path = Path("./data/kalshi.db")
     log_level: str = "INFO"

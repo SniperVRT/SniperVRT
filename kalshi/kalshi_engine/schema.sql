@@ -307,3 +307,133 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     http_errors       INTEGER DEFAULT 0,
     notes             TEXT
 );
+
+-- ------------------------------------------------------------------- --
+-- Week-3 additions: news evidence, portfolio governance, live execution
+-- adapter, rehearsal engine, drift tracking, health monitoring.       --
+-- ------------------------------------------------------------------- --
+
+CREATE TABLE IF NOT EXISTS feed_sources (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL UNIQUE,
+    url               TEXT NOT NULL,
+    reliability       REAL NOT NULL DEFAULT 0.5,   -- 0..1
+    last_fetched_at   TEXT,
+    last_status       TEXT,
+    last_error        TEXT,
+    enabled           INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS news_evidence (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name       TEXT NOT NULL,
+    source_url        TEXT,
+    item_url          TEXT NOT NULL,
+    item_hash         TEXT NOT NULL UNIQUE,   -- dedup by sha1(url+title)
+    title             TEXT,
+    summary           TEXT,
+    published_at      TEXT,
+    fetched_at        TEXT NOT NULL,
+    keywords_json     TEXT,
+    reliability_score REAL NOT NULL DEFAULT 0.5,
+    freshness_score   REAL NOT NULL DEFAULT 0.0,
+    processed         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_news_published ON news_evidence(published_at);
+CREATE INDEX IF NOT EXISTS idx_news_source ON news_evidence(source_name);
+
+CREATE TABLE IF NOT EXISTS evidence_attachments (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    evidence_id       INTEGER NOT NULL REFERENCES news_evidence(id),
+    relevance_score   REAL NOT NULL,
+    matched_keywords  TEXT,
+    attached_at       TEXT NOT NULL,
+    UNIQUE(ticker, evidence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_evid_attach_ticker ON evidence_attachments(ticker);
+
+CREATE TABLE IF NOT EXISTS portfolio_state (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at       TEXT NOT NULL,
+    bankroll_usd      REAL NOT NULL,
+    realized_pnl_usd  REAL NOT NULL,
+    unrealized_pnl_usd REAL NOT NULL,
+    open_exposure_usd REAL NOT NULL,
+    open_positions    INTEGER NOT NULL,
+    peak_equity_usd   REAL NOT NULL,
+    drawdown_usd      REAL NOT NULL,
+    payload_json      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_time ON portfolio_state(captured_at);
+
+CREATE TABLE IF NOT EXISTS governance_locks (
+    name              TEXT PRIMARY KEY,
+    engaged            INTEGER NOT NULL DEFAULT 0,
+    reason             TEXT,
+    engaged_at         TEXT,
+    released_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS live_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id         INTEGER REFERENCES signals(id),
+    ticker            TEXT NOT NULL,
+    side              TEXT NOT NULL CHECK (side IN ('yes','no')),
+    action            TEXT NOT NULL CHECK (action IN ('buy','sell')),
+    qty               INTEGER NOT NULL,
+    limit_price_cents INTEGER NOT NULL,
+    client_order_id   TEXT NOT NULL UNIQUE,    -- idempotency key
+    external_order_id TEXT,
+    status            TEXT NOT NULL CHECK (status IN ('preview','submitted','filled','partial','cancelled','rejected','reconciled','error')),
+    dry_run           INTEGER NOT NULL DEFAULT 1,
+    expected_avg_cents REAL,
+    actual_avg_cents   REAL,
+    filled_qty         INTEGER DEFAULT 0,
+    error             TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS live_fills (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    live_order_id     INTEGER NOT NULL REFERENCES live_orders(id),
+    qty               INTEGER NOT NULL,
+    price_cents       INTEGER NOT NULL,
+    fee_usd           REAL NOT NULL DEFAULT 0,
+    filled_at         TEXT NOT NULL,
+    external_fill_id  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rehearsal_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at        TEXT NOT NULL,
+    finished_at       TEXT,
+    scenarios_total   INTEGER DEFAULT 0,
+    scenarios_passed  INTEGER DEFAULT 0,
+    scenarios_failed  INTEGER DEFAULT 0,
+    audit_json        TEXT,
+    notes             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS drift_reports (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at       TEXT NOT NULL,
+    ticker            TEXT,
+    expected_fill_cents REAL,
+    actual_fill_cents   REAL,
+    expected_spread_cents REAL,
+    realized_spread_cents REAL,
+    slippage_cents    REAL,
+    execution_delay_ms REAL,
+    notes             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS health_checks (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at       TEXT NOT NULL,
+    component         TEXT NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('ok','warn','fail')),
+    detail            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_health_component ON health_checks(component, captured_at);

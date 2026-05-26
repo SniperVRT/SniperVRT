@@ -11,13 +11,19 @@ from rich.table import Table
 
 from .config import get_settings
 from .db import connect, init_db
+from .news.evidence import attach_recent_evidence
+from .news.feeds import fetch_and_persist, register_default_feeds
+from .ops.health import run_health_checks
+from .rehearsal.engine import run_rehearsal
 from .reports.daily import (
     build_daily_report,
     persist_daily_report,
     render_daily_report_text,
 )
+from .risk import governance as gov
 from .scanner import scan
 from .validation.calibration import calibration_report
+from .validation.drift import summary as drift_summary
 from .validation.metrics import performance_report
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -135,6 +141,127 @@ def cmd_approve(
                 (utc_now_iso(), signal_id),
             )
     console.print(f"[green]{decision}[/green] signal_id={signal_id}")
+
+
+@app.command("news-ingest")
+def cmd_news_ingest(
+    register: bool = typer.Option(True, "--register/--no-register",
+                                  help="Seed default feed list first."),
+    only: str = typer.Option(None, help="Comma-separated feed names to restrict to."),
+) -> None:
+    """Fetch all enabled RSS/Atom feeds and persist new evidence items."""
+    _configure_logging()
+    init_db()
+    with connect() as conn:
+        if register:
+            register_default_feeds(conn)
+        only_list = [s.strip() for s in only.split(",")] if only else None
+        summary = fetch_and_persist(conn, only=only_list)
+        attach = attach_recent_evidence(conn)
+    console.print(summary)
+    console.print(attach)
+
+
+@app.command("governance-status")
+def cmd_governance_status() -> None:
+    _configure_logging()
+    settings = get_settings()
+    with connect() as conn:
+        state = gov.compute_state(conn, settings)
+        locks = gov.active_locks(conn)
+    t = Table("metric", "value")
+    t.add_row("bankroll", f"${state.bankroll_usd:.2f}")
+    t.add_row("realized_pnl", f"${state.realized_pnl_usd:+.2f}")
+    t.add_row("unrealized_pnl", f"${state.unrealized_pnl_usd:+.2f}")
+    t.add_row("open_exposure", f"${state.open_exposure_usd:.2f}")
+    t.add_row("open_positions", str(state.open_positions))
+    t.add_row("peak_equity", f"${state.peak_equity_usd:.2f}")
+    t.add_row("drawdown", f"${state.drawdown_usd:.2f}")
+    t.add_row("consecutive_losses", str(state.consecutive_losses))
+    t.add_row("category_exposure", str(state.category_exposure))
+    t.add_row("strategy_exposure", str(state.strategy_exposure))
+    t.add_row("locks", ", ".join(n for n, _ in locks) or "[]")
+    console.print(t)
+
+
+@app.command("lock")
+def cmd_lock(name: str = typer.Argument(...), reason: str = typer.Option("manual")) -> None:
+    _configure_logging()
+    with connect() as conn:
+        gov.engage_lock(conn, name, reason)
+    console.print(f"[yellow]engaged[/yellow] lock={name} reason={reason}")
+
+
+@app.command("unlock")
+def cmd_unlock(name: str = typer.Argument(...)) -> None:
+    _configure_logging()
+    with connect() as conn:
+        gov.release_lock(conn, name)
+    console.print(f"[green]released[/green] lock={name}")
+
+
+@app.command("health-check")
+def cmd_health_check() -> None:
+    _configure_logging()
+    with connect() as conn:
+        rep = run_health_checks(conn)
+    t = Table("component", "status", "detail", title=f"Health — overall: {rep.overall}")
+    for c in rep.checks:
+        colour = {"ok": "green", "warn": "yellow", "fail": "red"}[c.status]
+        t.add_row(c.component, f"[{colour}]{c.status}[/{colour}]", c.detail)
+    console.print(t)
+
+
+@app.command("rehearse-live")
+def cmd_rehearse_live() -> None:
+    """Run the full live-workflow rehearsal (never touches real money)."""
+    _configure_logging()
+    init_db()
+    with connect() as conn:
+        rep = run_rehearsal(conn)
+    t = Table("scenario", "passed", "detail")
+    for s in rep.scenarios:
+        colour = "green" if s.passed else "red"
+        t.add_row(s.name, f"[{colour}]{s.passed}[/{colour}]",
+                  ", ".join(f"{k}={v!r}" for k, v in list(s.detail.items())[:3]))
+    console.print(t)
+    console.print(f"[bold]{rep.passed}/{rep.passed + rep.failed} passed[/bold]")
+
+
+@app.command("drift-report")
+def cmd_drift_report() -> None:
+    _configure_logging()
+    with connect() as conn:
+        s = drift_summary(conn)
+    t = Table("metric", "value")
+    for k, v in s.items():
+        t.add_row(k, f"{v}")
+    console.print(t)
+
+
+@app.command("live-readiness")
+def cmd_live_readiness() -> None:
+    """Aggregate readiness: tests aren't checked here (use pytest separately)."""
+    _configure_logging()
+    settings = get_settings()
+    with connect() as conn:
+        health = run_health_checks(conn)
+        locks = gov.active_locks(conn)
+        drift = drift_summary(conn)
+        rep = build_daily_report(conn)
+    ready = (
+        health.overall == "ok"
+        and not locks
+        and settings.live_enabled
+        and not settings.live_dry_run
+        and settings.live_require_manual_approval
+    )
+    console.print(f"[bold]status:[/bold] {'LIVE_READY' if ready else 'LIVE_LOCKED'}")
+    console.print(f"  health: {health.overall}")
+    console.print(f"  locks: {[n for n,_ in locks] or 'none'}")
+    console.print(f"  drift n={drift['n']} avg_slip={drift['avg_slippage_cents']:+.2f}c")
+    console.print(f"  signals today: {rep['signals_total']}  paper open: {rep['open_paper_positions']}")
+    console.print(f"  exec: live_enabled={settings.live_enabled} dry_run={settings.live_dry_run}")
 
 
 @app.command("calibration")

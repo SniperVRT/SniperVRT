@@ -26,7 +26,9 @@ from .core.probability import FairEstimate, midpoint_prob
 from .core.resolution import RiskClass
 from .core.signals import Rejection, Signal, build_signal, rank, signal_to_row
 from .db import connect, transaction, utc_now_iso
+from .news.evidence import attach_to_market, evidence_summary_for
 from .paper.executor import PaperExecutor
+from .risk import governance as gov
 from .risk.rules import can_take_trade
 from .strategies import (
     NewsLagStrategy,
@@ -241,9 +243,20 @@ def scan(
                     continue
 
                 evidence = evidence_provider(m) if evidence_provider else {}
+                # Attach + summarise any matching news evidence from the DB.
+                try:
+                    attach_to_market(
+                        conn, ticker=m.ticker, title=m.title,
+                        subtitle=m.subtitle, category=m.category,
+                    )
+                    news_ev = evidence_summary_for(conn, m.ticker, limit=3)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("evidence_attach_failed", ticker=m.ticker, err=str(e))
+                    news_ev = []
                 evidence = {**evidence, "quality": Q.to_dict(qscore),
                             "resolution_class": cls.risk_class,
-                            "resolution_score": cls.risk_score}
+                            "resolution_score": cls.risk_score,
+                            "news_evidence": news_ev}
                 implied = midpoint_prob(m.yes_bid, m.yes_ask) or 0.0
 
                 # Run each strategy to collect votes for ensemble + persist
@@ -306,7 +319,7 @@ def scan(
                     _persist_rejection(conn, outcome)
                     continue
 
-                # Risk gate
+                # Per-trade risk gate
                 risk = can_take_trade(
                     conn=conn, ticker=m.ticker,
                     proposed_size_usd=outcome.suggested_size_usd,
@@ -315,6 +328,19 @@ def scan(
                 if not risk.allowed:
                     rej = Rejection(m.ticker, "ensemble", f"risk:{risk.reason}",
                                     risk.detail or {})
+                    rejections.append(rej)
+                    _persist_rejection(conn, rej)
+                    continue
+
+                # Portfolio-level governance gate
+                gd = gov.evaluate_portfolio(
+                    conn=conn, settings=settings,
+                    proposed_size_usd=outcome.suggested_size_usd,
+                    category=m.category, strategy=outcome.strategy,
+                )
+                if not gd.allowed:
+                    rej = Rejection(m.ticker, "ensemble", f"governance:{gd.reason}",
+                                    gd.detail or {})
                     rejections.append(rej)
                     _persist_rejection(conn, rej)
                     continue
