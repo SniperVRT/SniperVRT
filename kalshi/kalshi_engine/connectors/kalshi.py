@@ -11,6 +11,7 @@ the rest of the engine consumes.
 from __future__ import annotations
 
 import base64
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,10 +19,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import httpx
+import structlog
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from ..config import Settings, get_settings
+
+log = structlog.get_logger("kalshi.connector")
 
 
 # --------------------------------------------------------------------------- #
@@ -142,12 +146,46 @@ class KalshiClient:
             "KALSHI-ACCESS-SIGNATURE": sig,
         }
 
-    def _get(self, path: str, *, params: dict[str, Any] | None = None, auth: bool = False) -> dict:
+    def _get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        auth: bool = False,
+        max_retries: int = 4,
+    ) -> dict:
+        """GET with bounded retry on 429 / 5xx / network errors.
+
+        Backoff is exponential with jitter, capped at ~16s. Anything
+        non-transient (4xx other than 429) raises immediately.
+        """
         full_path = self.http.base_url.path.rstrip("/") + path
-        headers = self._auth_headers("GET", full_path) if auth else {}
-        r = self.http.get(path, params=params, headers=headers)
-        r.raise_for_status()
-        return r.json()
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                headers = self._auth_headers("GET", full_path) if auth else {}
+                r = self.http.get(path, params=params, headers=headers)
+                if r.status_code == 429 or 500 <= r.status_code < 600:
+                    if attempt > max_retries:
+                        r.raise_for_status()
+                    delay = min(16.0, (2 ** (attempt - 1)) + random.random() * 0.5)
+                    log.warning("http_retry", path=path, status=r.status_code,
+                                attempt=attempt, delay=delay)
+                    time.sleep(delay)
+                    continue
+                r.raise_for_status()
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise ValueError(f"unexpected payload type {type(payload).__name__}")
+                return payload
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                if attempt > max_retries:
+                    raise
+                delay = min(16.0, (2 ** (attempt - 1)) + random.random() * 0.5)
+                log.warning("network_retry", path=path, attempt=attempt,
+                            delay=delay, err=str(e))
+                time.sleep(delay)
 
     # ----- public market data -------------------------------------------------
     def iter_markets(
@@ -157,6 +195,11 @@ class KalshiClient:
         limit: int = 200,
         max_pages: int | None = None,
     ) -> Iterator[Market]:
+        """Iterate every market page-by-page, validating each entry.
+
+        Malformed or missing-field entries are skipped (logged) rather
+        than aborting the whole scan.
+        """
         cursor: str | None = None
         pages = 0
         while True:
@@ -164,8 +207,18 @@ class KalshiClient:
             if cursor:
                 params["cursor"] = cursor
             data = self._get("/markets", params=params)
-            for m in data.get("markets", []):
-                yield _parse_market(m)
+            entries = data.get("markets")
+            if not isinstance(entries, list):
+                log.warning("markets_payload_invalid", got=type(entries).__name__)
+                break
+            for m in entries:
+                if not isinstance(m, dict) or "ticker" not in m:
+                    log.warning("market_entry_invalid")
+                    continue
+                try:
+                    yield _parse_market(m)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("market_parse_failed", ticker=m.get("ticker"), err=str(e))
             cursor = data.get("cursor") or None
             pages += 1
             if not cursor or (max_pages is not None and pages >= max_pages):

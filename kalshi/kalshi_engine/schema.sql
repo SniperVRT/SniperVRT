@@ -173,3 +173,137 @@ CREATE TABLE IF NOT EXISTS model_performance (
     profit_factor   REAL,
     max_drawdown    REAL
 );
+
+-- ------------------------------------------------------------------- --
+-- Week-2 additions: quality, resolution intelligence, ensemble votes, --
+-- paper trading, approvals, daily reports.                            --
+-- ------------------------------------------------------------------- --
+
+CREATE TABLE IF NOT EXISTS market_quality (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL REFERENCES markets(ticker),
+    captured_at       TEXT NOT NULL,
+    spread_score      REAL NOT NULL,
+    liquidity_score   REAL NOT NULL,
+    depth_score       REAL NOT NULL,
+    volume_score      REAL NOT NULL,
+    freshness_score   REAL NOT NULL,
+    tradability_score REAL NOT NULL,
+    rules_score       REAL NOT NULL,
+    total_score       REAL NOT NULL,
+    flags_json        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_quality_ticker ON market_quality(ticker, captured_at);
+
+CREATE TABLE IF NOT EXISTS resolution_classifications (
+    ticker            TEXT PRIMARY KEY REFERENCES markets(ticker),
+    risk_class        TEXT NOT NULL,    -- LOW_RISK_OBJECTIVE | MEDIUM_RISK_INTERPRETIVE | HIGH_RISK_AMBIGUOUS | REJECT_SUBJECTIVE | REJECT_SOURCE_UNCLEAR
+    risk_score        REAL NOT NULL,    -- 0..1, higher = worse
+    ambiguity_flags_json TEXT,
+    source_url        TEXT,
+    source_name       TEXT,
+    cutoff_at         TEXT,
+    classified_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ensemble_votes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL REFERENCES markets(ticker),
+    votes_json        TEXT NOT NULL,    -- [{strategy, fair, conf, lo, hi}, ...]
+    combined_fair     REAL NOT NULL,
+    combined_confidence REAL NOT NULL,
+    agreement_score   REAL NOT NULL,    -- 0..1, 1 = perfect agreement
+    implied_prob      REAL NOT NULL,
+    edge              REAL NOT NULL,
+    expected_value    REAL NOT NULL,
+    recommendation    TEXT NOT NULL,    -- yes | no | hold
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ensemble_ticker ON ensemble_votes(ticker, created_at);
+
+CREATE TABLE IF NOT EXISTS paper_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id         INTEGER REFERENCES signals(id),
+    ensemble_id       INTEGER REFERENCES ensemble_votes(id),
+    ticker            TEXT NOT NULL,
+    side              TEXT NOT NULL CHECK (side IN ('yes','no')),
+    action            TEXT NOT NULL CHECK (action IN ('buy','sell')),
+    qty               INTEGER NOT NULL,
+    limit_price_cents INTEGER NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('open','filled','partial','cancelled','rejected','expired')),
+    strategy          TEXT,
+    notes             TEXT,
+    created_at        TEXT NOT NULL,
+    decided_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status);
+
+CREATE TABLE IF NOT EXISTS paper_fills (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id          INTEGER NOT NULL REFERENCES paper_orders(id),
+    qty               INTEGER NOT NULL,
+    price_cents       INTEGER NOT NULL,
+    fee_usd           REAL NOT NULL DEFAULT 0,
+    filled_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    side              TEXT NOT NULL CHECK (side IN ('yes','no')),
+    qty               INTEGER NOT NULL,
+    avg_cost_cents    INTEGER NOT NULL,
+    last_mark_cents   INTEGER,
+    opened_at         TEXT NOT NULL,
+    closed_at         TEXT,
+    realized_pnl_usd  REAL,
+    strategy          TEXT,
+    signal_id         INTEGER REFERENCES signals(id),
+    UNIQUE(ticker, side, opened_at)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_open ON paper_positions(ticker, closed_at);
+
+CREATE TABLE IF NOT EXISTS paper_pnl (
+    day               TEXT PRIMARY KEY,
+    realized_usd      REAL NOT NULL DEFAULT 0,
+    unrealized_usd    REAL NOT NULL DEFAULT 0,
+    fees_usd          REAL NOT NULL DEFAULT 0,
+    trade_count       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS paper_trade_journal (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    event_type        TEXT NOT NULL,   -- open | mark | exit_take_profit | exit_stop | exit_time | exit_close | exit_manual | exit_resolution
+    payload_json      TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_journal_ticker ON paper_trade_journal(ticker, created_at);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id         INTEGER REFERENCES signals(id),
+    decision          TEXT NOT NULL CHECK (decision IN ('approve','reject','watchlist')),
+    actor             TEXT,
+    notes             TEXT,
+    created_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+    day               TEXT PRIMARY KEY,
+    payload_json      TEXT NOT NULL,
+    generated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at        TEXT NOT NULL,
+    finished_at       TEXT,
+    pages_fetched     INTEGER DEFAULT 0,
+    markets_fetched   INTEGER DEFAULT 0,
+    markets_persisted INTEGER DEFAULT 0,
+    signals_emitted   INTEGER DEFAULT 0,
+    rejections        INTEGER DEFAULT 0,
+    http_errors       INTEGER DEFAULT 0,
+    notes             TEXT
+);
