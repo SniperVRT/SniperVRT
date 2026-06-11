@@ -35,10 +35,11 @@ PLATFORM = "hyperliquid"
 
 
 def active_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Active LIVE subscriptions only. Paper subs are isolated by mode."""
     rows = conn.execute(
         "SELECT s.*, m.nickname FROM subscriptions s "
         "JOIN masters m ON m.uid = s.master_uid "
-        "WHERE s.status = 'active'"
+        "WHERE s.status = 'active' AND s.mode = 'live'"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -61,11 +62,20 @@ def execute_decisions(
 
     if not _safety_gate_ok(conn, settings):
         log.warning("subscriptions_blocked_safety_gate")
-        return counts
+        # Optional emergency unwind: forced withdrawals (still respect lockup).
+        if settings.emergency_force_unwind:
+            decisions = _force_unwind_decisions(conn)
+            log.warning("emergency_unwind_engaged", n=len(decisions))
+        else:
+            return counts
 
     # Only build the connector if we'll actually call it.
     if connector is None and not dry_run:
         connector = HyperliquidConnector(settings)
+
+    # Cap single-tick capital movement: clip target_usdt deltas to keep
+    # rebalances from accidentally swinging the portfolio in one cycle.
+    decisions = _clip_deltas(decisions, settings)
 
     active = {r["master_uid"]: r for r in active_subscriptions(conn)}
 
@@ -95,9 +105,9 @@ def execute_decisions(
                 conn.execute(
                     """
                     INSERT INTO subscriptions
-                        (master_uid, platform, allocated_usdt, subscribed_at,
+                        (master_uid, platform, mode, allocated_usdt, subscribed_at,
                          status, external_sub_id, lockup_until_ms)
-                    VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    VALUES (?, ?, 'live', ?, ?, 'active', ?, ?)
                     """,
                     (d.master_uid, PLATFORM, d.target_usdt, utc_now_iso(),
                      ext_id, lockup_until),
@@ -207,7 +217,8 @@ def snapshot_pnl(conn: sqlite3.Connection,
             log.warning("pnl_poll_failed", sub=sub.get("id"), err=str(e))
 
 
-def _safety_gate_ok(conn: sqlite3.Connection, settings: CopyTradeSettings) -> bool:
+def _safety_gate_ok(conn: sqlite3.Connection, settings: CopyTradeSettings) -> bool:  # noqa: D401
+    """Shared safety gate used by live + paper executors."""
     row = conn.execute(
         "SELECT drawdown_pct FROM portfolio_snapshots "
         "ORDER BY captured_at DESC LIMIT 1"
@@ -234,6 +245,37 @@ def _can_withdraw(sub: dict[str, Any]) -> bool:
 
 def _lockup_ts() -> int:
     return int(time.time() * 1000) + USER_VAULT_LOCKUP_MS
+
+
+def _force_unwind_decisions(conn: sqlite3.Connection) -> list[AllocationDecision]:
+    """Emergency: withdraw everything we can (subject to lockup)."""
+    return [
+        AllocationDecision(
+            master_uid=r["master_uid"], action="unsubscribe",
+            current_usdt=float(r["allocated_usdt"]), target_usdt=0.0,
+            score=0.0, reason="emergency_force_unwind",
+        )
+        for r in active_subscriptions(conn)
+    ]
+
+
+def _clip_deltas(decisions: list[AllocationDecision],
+                 settings: CopyTradeSettings) -> list[AllocationDecision]:
+    """Limit single-tick allocation changes to max_delta_per_rebalance_pct of capital."""
+    cap = settings.total_capital_usdt * settings.max_delta_per_rebalance_pct
+    out: list[AllocationDecision] = []
+    for d in decisions:
+        delta = d.target_usdt - d.current_usdt
+        if abs(delta) > cap:
+            clipped = d.current_usdt + (cap if delta > 0 else -cap)
+            out.append(AllocationDecision(
+                master_uid=d.master_uid, action=d.action,
+                current_usdt=d.current_usdt, target_usdt=clipped,
+                score=d.score, reason=f"{d.reason}|clipped",
+            ))
+        else:
+            out.append(d)
+    return out
 
 
 def _extract_tx_id(result: Any) -> str:

@@ -56,6 +56,7 @@ def run_leaderboard_poll(dry_run: bool = True,
                     "win_rate": m.win_rate, "total_trades": m.total_trades,
                     "followers": m.followers, "aum_usdt": m.aum_usdt,
                     "avg_holding_h": m.avg_holding_h, "sharpe": m.sharpe,
+                    "raw": m.raw,
                 })
             deactivated = mark_inactive(conn, "hyperliquid", active_uids)
             scores = score_traders(conn, snap_rows, settings)

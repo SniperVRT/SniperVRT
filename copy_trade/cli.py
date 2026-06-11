@@ -192,6 +192,105 @@ def cmd_pnl() -> None:
     console.print(t)
 
 
+@app.command("paper-rebalance")
+def cmd_paper_rebalance() -> None:
+    """Run rebalance in paper mode — same logic as live but no real deposits."""
+    from .allocation.portfolio import compute_allocations
+    from .config import get_settings
+    from .db import connect, transaction
+    from .paper.executor import (
+        active_paper_subscriptions, execute_paper_decisions,
+    )
+    from .ranking.score import TraderScore
+    settings = get_settings()
+    with connect(settings.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts.*, ts.composite_score, ts.eligible FROM trader_scores ts
+            WHERE ts.scored_at = (SELECT MAX(scored_at) FROM trader_scores
+                                  WHERE master_uid = ts.master_uid)
+              AND ts.eligible = 1
+            ORDER BY ts.composite_score DESC
+            """
+        ).fetchall()
+        scores = [
+            TraderScore(
+                master_uid=r["master_uid"], snapshot_id=r["snapshot_id"],
+                sharpe_est=r["sharpe_est"], calmar_est=r["calmar_est"],
+                composite=r["composite_score"], rank=i + 1,
+                eligible=bool(r["eligible"]), filter_reason=r["filter_reason"],
+            ) for i, r in enumerate(rows)
+        ]
+        current = active_paper_subscriptions(conn)
+        decisions = compute_allocations(scores, current, settings)
+        with transaction(conn):
+            counts = execute_paper_decisions(conn, decisions, settings)
+    console.print(counts)
+
+
+@app.command("paper-pnl")
+def cmd_paper_pnl() -> None:
+    """Poll real vault equities and apply to paper subscriptions."""
+    from .config import get_settings
+    from .db import connect
+    from .paper.executor import snapshot_paper_pnl
+    with connect(get_settings().db_path) as conn:
+        snapshot_paper_pnl(conn)
+    console.print("[green]paper PnL updated[/green]")
+
+
+@app.command("backtest")
+def cmd_backtest(
+    capital: float = typer.Option(1000.0, "--capital"),
+    rebalance_hours: int = typer.Option(24, "--rebalance-hours"),
+    notes: str = typer.Option("", "--notes"),
+) -> None:
+    """Replay collected snapshots through the scoring + allocation logic."""
+    from .backtest.engine import run_backtest
+    from .config import get_settings
+    from .db import connect, transaction
+    settings = get_settings()
+    with connect(settings.db_path) as conn:
+        with transaction(conn):
+            res = run_backtest(
+                conn, initial_capital=capital,
+                rebalance_hours=rebalance_hours, settings=settings, notes=notes,
+            )
+    t = Table("metric", "value")
+    t.add_row("run_id", str(res.run_id))
+    t.add_row("ticks", str(res.n_ticks))
+    t.add_row("initial", f"${res.initial_capital:.2f}")
+    t.add_row("final", f"${res.final_equity:.2f}")
+    t.add_row("return", f"{res.total_return:+.1%}")
+    t.add_row("sharpe", f"{res.sharpe:.2f}" if res.sharpe else "—")
+    t.add_row("max_dd", f"{res.max_drawdown:.1%}")
+    t.add_row("avg_alloc_count", f"{res.avg_alloc_count:.1f}")
+    console.print(t)
+
+
+@app.command("backtest-list")
+def cmd_backtest_list() -> None:
+    """List completed backtest runs."""
+    from .config import get_settings
+    from .db import connect
+    with connect(get_settings().db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, started_at, tick_count, total_return, sharpe, "
+            "max_drawdown, notes FROM backtest_runs ORDER BY id DESC LIMIT 20"
+        ).fetchall()
+    t = Table("id", "started", "ticks", "return", "sharpe", "mdd", "notes")
+    for r in rows:
+        t.add_row(
+            str(r["id"]), (r["started_at"] or "")[:19],
+            str(r["tick_count"]),
+            f"{r['total_return']:+.1%}" if r["total_return"] is not None else "—",
+            f"{r['sharpe']:.2f}" if r["sharpe"] is not None else "—",
+            f"{r['max_drawdown']:.1%}" if r["max_drawdown"] is not None else "—",
+            (r["notes"] or "")[:30],
+        )
+    console.print(t)
+
+
 @app.command("validation")
 def cmd_validation() -> None:
     """Show score prediction accuracy: did high-scored traders outperform?"""

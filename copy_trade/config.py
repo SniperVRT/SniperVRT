@@ -58,6 +58,13 @@ class CopyTradeSettings(BaseSettings):
     # ---- Risk limits ---------------------------------------------------------
     max_daily_loss_pct: float = 0.05        # stop all copying if portfolio down >5% today
     max_total_drawdown_pct: float = 0.15    # emergency stop if portfolio down >15% ever
+    max_delta_per_rebalance_pct: float = 0.50  # cap single-tick capital shift
+    emergency_force_unwind: bool = False     # if drawdown gate trips: force withdraw
+
+    # ---- Vault filters (added after live-readiness gap analysis) -------------
+    min_vault_tvl_usdt: float = 50_000.0    # micro-vaults have unreliable APR
+    max_leader_commission: float = 0.15      # skip vaults charging > 15% perf fee
+    correlation_threshold: float = 0.70      # dedup vaults with daily-ret corr >= this
 
     # ---- Storage -------------------------------------------------------------
     db_path: Path = Path("./data/copy_trade.db")

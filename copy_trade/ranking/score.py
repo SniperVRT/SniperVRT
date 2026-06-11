@@ -53,6 +53,13 @@ class TraderScore:
     filter_reason: str | None
 
 
+def _float_raw(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _sharpe_from_series(returns: list[float]) -> float | None:
     if len(returns) < 3:
         return None
@@ -122,9 +129,24 @@ def score_traders(
             reason = f"followers_{followers}<{settings.min_followers}"
 
         win_rate = snap.get("win_rate") or 0.0
-        if win_rate < settings.min_win_rate:
+        # win_rate is only enforced when the platform exposes it (Hyperliquid
+        # vaults don't, so we skip the gate when value is missing).
+        if snap.get("win_rate") is not None and win_rate < settings.min_win_rate:
             eligible = False
             reason = f"win_rate_{win_rate:.0%}<{settings.min_win_rate:.0%}"
+
+        # TVL floor — micro-vaults have noise-dominated APR
+        tvl = snap.get("aum_usdt") or 0.0
+        if tvl < settings.min_vault_tvl_usdt:
+            eligible = False
+            reason = reason or f"tvl_${tvl:.0f}<${settings.min_vault_tvl_usdt:.0f}"
+
+        # Leader commission filter (from vaultDetails.leaderCommission)
+        raw = snap.get("raw") or {}
+        leader_fee = _float_raw(raw.get("leaderCommission"))
+        if leader_fee is not None and leader_fee > settings.max_leader_commission:
+            eligible = False
+            reason = reason or f"leader_fee_{leader_fee:.0%}>max"
 
         # Compute Sharpe
         platform_sharpe = snap.get("sharpe")
@@ -136,7 +158,14 @@ def score_traders(
             eligible = False
             reason = reason or f"sharpe_{sharpe:.2f}<{settings.min_sharpe}"
 
-        calmar = _calmar(snap.get("roi_all"), mdd)
+        # Adjust returns for leader commission — depositor sees roi × (1 - fee)
+        # only on positive PnL. Approximate by discounting roi_all when positive.
+        fee_factor = 1.0 - (leader_fee or 0.0)
+        adj_roi_all = (snap.get("roi_all") or 0.0)
+        if adj_roi_all > 0:
+            adj_roi_all = adj_roi_all * fee_factor
+
+        calmar = _calmar(adj_roi_all, mdd)
         profit_factor = _estimate_profit_factor(win_rate, snap.get("roi_all") or 0.0)
         consistency = _estimate_consistency(series)
 

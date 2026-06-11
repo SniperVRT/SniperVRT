@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     master_uid      TEXT NOT NULL REFERENCES masters(uid),
     platform        TEXT NOT NULL,
+    mode            TEXT NOT NULL DEFAULT 'live'
+                        CHECK (mode IN ('live','paper','backtest')),
+    backtest_run_id INTEGER,                    -- non-null only for mode='backtest'
     allocated_usdt  REAL NOT NULL,
     subscribed_at   TEXT NOT NULL,
     unsubscribed_at TEXT,
@@ -109,6 +112,34 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     peak_equity     REAL NOT NULL,
     drawdown_pct    REAL NOT NULL DEFAULT 0,
     active_masters  INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---- Vault pair correlations (for dedup) -----------------------------------
+CREATE TABLE IF NOT EXISTS vault_correlations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_a         TEXT NOT NULL,
+    vault_b         TEXT NOT NULL,
+    correlation     REAL NOT NULL,              -- Pearson on equity-curve returns
+    n_points        INTEGER NOT NULL,
+    computed_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_corr_pair ON vault_correlations(vault_a, vault_b);
+
+-- ---- Backtest runs ---------------------------------------------------------
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    params_json     TEXT NOT NULL,              -- weights, thresholds used
+    tick_count      INTEGER NOT NULL DEFAULT 0,
+    initial_capital REAL NOT NULL,
+    final_equity    REAL,
+    total_return    REAL,
+    sharpe          REAL,
+    max_drawdown    REAL,
+    avg_alloc_count REAL,
+    notes           TEXT
 );
 
 -- ---- Emergency stop log ----------------------------------------------------
