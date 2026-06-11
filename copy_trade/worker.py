@@ -25,7 +25,7 @@ from .db import connect, init_db, transaction, utc_now_iso
 from .execution.subscriptions import (
     active_subscriptions, execute_decisions, snapshot_pnl,
 )
-from .platforms.bitget import BitgetConnector
+from .platforms.hyperliquid import HyperliquidConnector
 from .ranking.score import persist_scores, score_traders
 from .traders.store import (
     active_masters, insert_snapshot, mark_inactive, upsert_master,
@@ -38,10 +38,10 @@ log = structlog.get_logger("copy_trade.worker")
 def run_leaderboard_poll(dry_run: bool = True,
                          settings: CopyTradeSettings | None = None) -> None:
     settings = settings or get_settings()
-    connector = BitgetConnector(settings)
+    connector = HyperliquidConnector(settings)
     conn = connect(settings.db_path)
     try:
-        masters = connector.all_leaderboard(max_pages=10)
+        masters = connector.all_leaderboard(max_pages=10, enrich_top_n=80)
         active_uids: set[str] = set()
         snap_rows: list[dict] = []
         with transaction(conn):
@@ -57,7 +57,7 @@ def run_leaderboard_poll(dry_run: bool = True,
                     "followers": m.followers, "aum_usdt": m.aum_usdt,
                     "avg_holding_h": m.avg_holding_h, "sharpe": m.sharpe,
                 })
-            deactivated = mark_inactive(conn, "bitget", active_uids)
+            deactivated = mark_inactive(conn, "hyperliquid", active_uids)
             scores = score_traders(conn, snap_rows, settings)
             persist_scores(conn, scores)
         log.info("leaderboard_poll_done",
@@ -70,7 +70,7 @@ def run_leaderboard_poll(dry_run: bool = True,
 def run_rebalance(dry_run: bool = True,
                   settings: CopyTradeSettings | None = None) -> None:
     settings = settings or get_settings()
-    connector = BitgetConnector(settings)
+    connector = HyperliquidConnector(settings)
     conn = connect(settings.db_path)
     try:
         # Latest scores for eligible masters
@@ -115,7 +115,7 @@ def run_rebalance(dry_run: bool = True,
 def run_pnl_poll(dry_run: bool = True,
                  settings: CopyTradeSettings | None = None) -> None:
     settings = settings or get_settings()
-    connector = BitgetConnector(settings)
+    connector = HyperliquidConnector(settings)
     conn = connect(settings.db_path)
     try:
         if not dry_run:

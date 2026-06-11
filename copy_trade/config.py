@@ -15,12 +15,17 @@ class CopyTradeSettings(BaseSettings):
         extra="ignore",
     )
 
-    # ---- Bitget credentials (follower account — only platform with subscriber API)
+    # ---- Hyperliquid (US-legal: non-custodial perp DEX, vaults = copy primitive)
+    # The wallet address is the funder; private key signs EIP-712 actions.
+    hyperliquid_wallet_address: str = ""
+    hyperliquid_private_key: str = ""      # 0x-prefixed hex; NEVER commit
+    hyperliquid_api_base: str = "https://api.hyperliquid.xyz"
+    hyperliquid_testnet: bool = True       # MUST flip to False for live
+
+    # ---- Bitget / Bybit (kept for reference; both fail US geo gate currently)
     bitget_api_key: str = ""
     bitget_api_secret: str = ""
-    bitget_passphrase: str = ""            # Bitget requires API passphrase
-
-    # ---- Bybit (position management only — no programmatic subscribe API)
+    bitget_passphrase: str = ""
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
 

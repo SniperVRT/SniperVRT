@@ -1,16 +1,24 @@
-"""Subscription management — wire allocation decisions to platform API calls.
+"""Subscription management — translate allocation decisions into vault deposits.
 
-This is the money-making module. It translates AllocationDecisions into
-actual subscribe/unsubscribe calls on the platform, with:
-  - Safety gate: check portfolio drawdown before any new subscribe
-  - Idempotency: don't double-subscribe the same master
+On Hyperliquid:
+  subscribe       → vault_usd_transfer(is_deposit=True,  usd=micro_usdc)
+  unsubscribe     → vault_usd_transfer(is_deposit=False, usd=micro_usdc)
+  rebalance up    → additional deposit
+  rebalance down  → partial withdraw (BLOCKED if within 1-day lockup)
+
+Safety layers:
+  - Portfolio drawdown gate
+  - Per-master min deposit floor (Hyperliquid enforces ~100 USDC server-side)
+  - Lockup check before withdraw (24h on user vaults, 96h on HLP)
+  - Idempotent: don't double-subscribe an already-active master
   - Full audit trail in `subscriptions` table
-  - Graceful error handling with retry logic inside the connector
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
 from typing import Any
 
 import structlog
@@ -18,9 +26,12 @@ import structlog
 from ..allocation.portfolio import AllocationDecision
 from ..config import CopyTradeSettings, get_settings
 from ..db import utc_now_iso
-from ..platforms.bitget import BitgetConnector
+from ..platforms.hyperliquid import HyperliquidConnector
 
 log = structlog.get_logger("copy_trade.subscriptions")
+
+USER_VAULT_LOCKUP_MS = 24 * 60 * 60 * 1000  # 24h
+PLATFORM = "hyperliquid"
 
 
 def active_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -35,26 +46,26 @@ def active_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def execute_decisions(
     conn: sqlite3.Connection,
     decisions: list[AllocationDecision],
-    connector: BitgetConnector | None = None,
+    connector: HyperliquidConnector | None = None,
     settings: CopyTradeSettings | None = None,
     dry_run: bool = True,
 ) -> dict[str, int]:
-    """Execute a list of allocation decisions against the platform API.
+    """Execute allocation decisions against Hyperliquid vault API.
 
-    `dry_run=True` (default): logs intent but makes no API calls.
-    Set `dry_run=False` with live API key to go live.
-
-    Returns counts: {subscribe: N, rebalance: N, unsubscribe: N, keep: N, error: N}
+    `dry_run=True` (default) logs intent but makes no chain transactions.
+    Set `dry_run=False` only after testing on testnet first.
     """
     settings = settings or get_settings()
-    connector = connector or BitgetConnector(settings)
-    counts: dict[str, int] = {"subscribe": 0, "rebalance": 0,
-                               "unsubscribe": 0, "keep": 0, "error": 0}
+    counts = {"subscribe": 0, "rebalance": 0, "unsubscribe": 0,
+              "keep": 0, "lockup_blocked": 0, "error": 0}
 
-    # Safety: check portfolio drawdown gate
     if not _safety_gate_ok(conn, settings):
         log.warning("subscriptions_blocked_safety_gate")
         return counts
+
+    # Only build the connector if we'll actually call it.
+    if connector is None and not dry_run:
+        connector = HyperliquidConnector(settings)
 
     active = {r["master_uid"]: r for r in active_subscriptions(conn)}
 
@@ -69,65 +80,134 @@ def execute_decisions(
                     log.info("skip_subscribe_already_active", uid=d.master_uid)
                     counts["keep"] += 1
                     continue
+                if d.target_usdt < settings.min_allocation_usdt:
+                    log.info("skip_subscribe_below_min", uid=d.master_uid,
+                             usdt=d.target_usdt)
+                    continue
                 log.info("subscribe", uid=d.master_uid, usdt=d.target_usdt,
                          dry_run=dry_run)
-                ext_id = ""
+                ext_id, lockup_until = "", _lockup_ts()
                 if not dry_run:
-                    ext_id = connector.subscribe(
+                    result = connector.follow(
                         d.master_uid, allocated_usdt=d.target_usdt,
                     )
+                    ext_id = _extract_tx_id(result)
                 conn.execute(
                     """
                     INSERT INTO subscriptions
                         (master_uid, platform, allocated_usdt, subscribed_at,
-                         status, external_sub_id)
-                    VALUES (?, 'bybit', ?, ?, 'active', ?)
+                         status, external_sub_id, lockup_until_ms)
+                    VALUES (?, ?, ?, ?, 'active', ?, ?)
                     """,
-                    (d.master_uid, d.target_usdt, utc_now_iso(), ext_id),
+                    (d.master_uid, PLATFORM, d.target_usdt, utc_now_iso(),
+                     ext_id, lockup_until),
                 )
                 counts["subscribe"] += 1
 
             elif d.action == "rebalance":
-                log.info("rebalance", uid=d.master_uid,
-                         from_usdt=d.current_usdt, to_usdt=d.target_usdt,
-                         dry_run=dry_run)
-                if not dry_run:
-                    sub = active.get(d.master_uid)
-                    if sub and sub.get("external_sub_id"):
-                        # Bybit: cancel + recreate at new allocation
-                        connector.unsubscribe(d.master_uid, sub["external_sub_id"])
-                        ext_id = connector.subscribe(
-                            d.master_uid, allocated_usdt=d.target_usdt,
-                        )
-                        conn.execute(
-                            "UPDATE subscriptions SET allocated_usdt=?, "
-                            "external_sub_id=?, updated_at=? WHERE id=?",
-                            (d.target_usdt, ext_id, utc_now_iso(), sub["id"]),
-                        )
-                counts["rebalance"] += 1
+                sub = active.get(d.master_uid)
+                if sub is None:
+                    continue
+                delta = d.target_usdt - d.current_usdt
+                if delta > 0:
+                    # Deposit more (no lockup issue)
+                    log.info("rebalance_up", uid=d.master_uid, delta=delta,
+                             dry_run=dry_run)
+                    if not dry_run:
+                        connector.follow(d.master_uid, allocated_usdt=delta)
+                    conn.execute(
+                        "UPDATE subscriptions SET allocated_usdt=?, "
+                        "lockup_until_ms=? WHERE id=?",
+                        (d.target_usdt, _lockup_ts(), sub["id"]),
+                    )
+                    counts["rebalance"] += 1
+                elif delta < 0:
+                    # Withdraw — blocked if within lockup
+                    if not _can_withdraw(sub):
+                        log.info("rebalance_blocked_lockup", uid=d.master_uid)
+                        counts["lockup_blocked"] += 1
+                        continue
+                    log.info("rebalance_down", uid=d.master_uid, delta=delta,
+                             dry_run=dry_run)
+                    if not dry_run:
+                        connector.unfollow(d.master_uid, withdraw_usdt=abs(delta))
+                    conn.execute(
+                        "UPDATE subscriptions SET allocated_usdt=? WHERE id=?",
+                        (d.target_usdt, sub["id"]),
+                    )
+                    counts["rebalance"] += 1
 
             elif d.action == "unsubscribe":
-                log.info("unsubscribe", uid=d.master_uid, dry_run=dry_run)
                 sub = active.get(d.master_uid)
-                if sub:
-                    if not dry_run and sub.get("external_sub_id"):
-                        connector.unsubscribe(d.master_uid, sub["external_sub_id"])
-                    conn.execute(
-                        "UPDATE subscriptions SET status='unsubscribed', "
-                        "unsubscribed_at=? WHERE id=?",
-                        (utc_now_iso(), sub["id"]),
+                if sub is None:
+                    counts["unsubscribe"] += 1
+                    continue
+                if not _can_withdraw(sub):
+                    log.info("unsubscribe_blocked_lockup", uid=d.master_uid)
+                    counts["lockup_blocked"] += 1
+                    continue
+                log.info("unsubscribe", uid=d.master_uid, dry_run=dry_run)
+                if not dry_run:
+                    connector.unfollow(
+                        d.master_uid, withdraw_usdt=float(sub["allocated_usdt"]),
                     )
+                conn.execute(
+                    "UPDATE subscriptions SET status='unsubscribed', "
+                    "unsubscribed_at=? WHERE id=?",
+                    (utc_now_iso(), sub["id"]),
+                )
                 counts["unsubscribe"] += 1
 
         except Exception as e:  # noqa: BLE001
-            log.error("subscription_error", uid=d.master_uid, action=d.action, err=str(e))
+            log.error("subscription_error", uid=d.master_uid,
+                      action=d.action, err=str(e))
             counts["error"] += 1
 
     return counts
 
 
+def snapshot_pnl(conn: sqlite3.Connection,
+                 connector: HyperliquidConnector | None = None,
+                 settings: CopyTradeSettings | None = None) -> None:
+    """Poll vault equity for all active subscriptions and persist."""
+    settings = settings or get_settings()
+    connector = connector or HyperliquidConnector(settings)
+    equities = {
+        str(e.get("vaultAddress", "")).lower(): e
+        for e in connector.my_vault_equities()
+    }
+    for sub in active_subscriptions(conn):
+        try:
+            uid_lower = sub["master_uid"].lower()
+            entry = equities.get(uid_lower, {})
+            current_equity = float(entry.get("equity", 0) or 0)
+            allocated = float(sub["allocated_usdt"])
+            unrealised = current_equity - allocated
+            # Hyperliquid vault PnL is purely unrealised until withdrawal.
+            conn.execute(
+                """
+                INSERT INTO subscription_pnl
+                    (subscription_id, captured_at, realized_pnl,
+                     unrealized_pnl, total_pnl, raw_json)
+                VALUES (?,?,?,?,?,?)
+                """,
+                (
+                    sub["id"], utc_now_iso(),
+                    0.0, unrealised, unrealised,
+                    json.dumps(entry),
+                ),
+            )
+            # Update lockup if Hyperliquid extended it
+            if entry.get("lockedUntilTimestamp"):
+                conn.execute(
+                    "UPDATE subscriptions SET lockup_until_ms=? WHERE id=?",
+                    (int(entry["lockedUntilTimestamp"]), sub["id"]),
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("pnl_poll_failed", sub=sub.get("id"), err=str(e))
+
+
 def _safety_gate_ok(conn: sqlite3.Connection, settings: CopyTradeSettings) -> bool:
-    """Return False if portfolio drawdown exceeds the emergency-stop threshold."""
     row = conn.execute(
         "SELECT drawdown_pct FROM portfolio_snapshots "
         "ORDER BY captured_at DESC LIMIT 1"
@@ -145,30 +225,25 @@ def _safety_gate_ok(conn: sqlite3.Connection, settings: CopyTradeSettings) -> bo
     return True
 
 
-def snapshot_pnl(conn: sqlite3.Connection,
-                 connector: BitgetConnector | None = None,
-                 settings: CopyTradeSettings | None = None) -> None:
-    """Poll PnL for all active subscriptions and persist."""
-    settings = settings or get_settings()
-    connector = connector or BitgetConnector(settings)
-    for sub in active_subscriptions(conn):
-        try:
-            pnl = connector.subscription_pnl(sub.get("external_sub_id", ""))
-            realized = float(pnl.get("realizedPnl", 0) or 0)
-            unrealized = float(pnl.get("unrealisedPnl", 0) or 0)
-            import json
-            conn.execute(
-                """
-                INSERT INTO subscription_pnl
-                    (subscription_id, captured_at, realized_pnl,
-                     unrealized_pnl, total_pnl, raw_json)
-                VALUES (?,?,?,?,?,?)
-                """,
-                (
-                    sub["id"], utc_now_iso(),
-                    realized, unrealized, realized + unrealized,
-                    json.dumps(pnl),
-                ),
-            )
-        except Exception as e:  # noqa: BLE001
-            log.warning("pnl_poll_failed", sub=sub.get("id"), err=str(e))
+def _can_withdraw(sub: dict[str, Any]) -> bool:
+    lockup = sub.get("lockup_until_ms")
+    if lockup is None:
+        return True
+    return int(time.time() * 1000) >= int(lockup)
+
+
+def _lockup_ts() -> int:
+    return int(time.time() * 1000) + USER_VAULT_LOCKUP_MS
+
+
+def _extract_tx_id(result: Any) -> str:
+    """Pull tx hash from a Hyperliquid action response if present."""
+    if not isinstance(result, dict):
+        return ""
+    response = result.get("response") or {}
+    data = response.get("data") if isinstance(response, dict) else {}
+    if isinstance(data, dict):
+        statuses = data.get("statuses") or []
+        if statuses and isinstance(statuses[0], dict):
+            return str(statuses[0].get("tx", ""))
+    return ""

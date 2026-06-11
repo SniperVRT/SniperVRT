@@ -11,7 +11,7 @@ from copy_trade.platforms.base import MasterStats
 
 def _master(uid: str) -> MasterStats:
     return MasterStats(
-        uid=uid, platform="bitget", nickname="T",
+        uid=uid, platform="hyperliquid", nickname="T",
         roi_7d=0.02, roi_30d=0.08, roi_all=0.25,
         mdd=-0.10, win_rate=0.55, total_trades=80,
         followers=10, aum_usdt=2000.0, avg_holding_h=2.0, sharpe=None,
@@ -53,11 +53,32 @@ def test_unsubscribe_marks_inactive(conn, settings):
     upsert_master(conn, _master("xyz"))
     sub_d = _decision("xyz", "subscribe", 100.0)
     execute_decisions(conn, [sub_d], connector=None, settings=settings, dry_run=True)
-    # Now unsubscribe
+    # Clear lockup so unsubscribe can proceed (vault lockup expired)
+    conn.execute("UPDATE subscriptions SET lockup_until_ms=0 WHERE master_uid='xyz'")
     unsub_d = _decision("xyz", "unsubscribe", 0.0, 100.0)
     execute_decisions(conn, [unsub_d], connector=None, settings=settings, dry_run=True)
     subs = active_subscriptions(conn)
     assert not any(s["master_uid"] == "xyz" for s in subs)
+
+
+def test_unsubscribe_blocked_during_lockup(conn, settings):
+    import time
+    upsert_master(conn, _master("locked"))
+    sub_d = _decision("locked", "subscribe", 100.0)
+    execute_decisions(conn, [sub_d], connector=None, settings=settings, dry_run=True)
+    # Force lockup to be in the future
+    future_lockup = int(time.time() * 1000) + 86400 * 1000
+    conn.execute("UPDATE subscriptions SET lockup_until_ms=? WHERE master_uid='locked'",
+                 (future_lockup,))
+    # Try to unsubscribe — should be blocked
+    unsub_d = _decision("locked", "unsubscribe", 0.0, 100.0)
+    counts = execute_decisions(conn, [unsub_d], connector=None,
+                               settings=settings, dry_run=True)
+    assert counts["lockup_blocked"] == 1
+    assert counts["unsubscribe"] == 0
+    # Still active
+    subs = active_subscriptions(conn)
+    assert any(s["master_uid"] == "locked" for s in subs)
 
 
 def test_safety_gate_blocks_when_drawdown_exceeded(conn, settings):

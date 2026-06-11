@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     status          TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active','paused','unsubscribed','error')),
     external_sub_id TEXT,                       -- platform's subscription id
+    lockup_until_ms INTEGER,                    -- ms timestamp; can't withdraw before
     error           TEXT
 );
 
