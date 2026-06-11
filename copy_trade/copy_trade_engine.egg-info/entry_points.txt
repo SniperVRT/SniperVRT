@@ -1,0 +1,2 @@
+[console_scripts]
+copy-trade = copy_trade.cli:app

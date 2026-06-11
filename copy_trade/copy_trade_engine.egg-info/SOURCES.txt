@@ -1,0 +1,11 @@
+pyproject.toml
+copy_trade_engine.egg-info/PKG-INFO
+copy_trade_engine.egg-info/SOURCES.txt
+copy_trade_engine.egg-info/dependency_links.txt
+copy_trade_engine.egg-info/entry_points.txt
+copy_trade_engine.egg-info/requires.txt
+copy_trade_engine.egg-info/top_level.txt
+tests/test_allocation.py
+tests/test_scoring.py
+tests/test_store.py
+tests/test_subscriptions.py
