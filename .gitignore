@@ -28,3 +28,9 @@ snipervrt.bundle
 snipervrt-source.tar.gz
 snipervrt-source.zip
 bundle.txt
+*.bundle
+
+# python build artifacts
+__pycache__/
+*.egg-info/
+*.pyc

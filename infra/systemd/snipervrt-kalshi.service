@@ -1,0 +1,17 @@
+[Unit]
+Description=SniperVRT Kalshi engine worker
+After=network.target
+
+[Service]
+Type=simple
+User=snipervrt
+WorkingDirectory=/opt/snipervrt/kalshi
+EnvironmentFile=/etc/snipervrt/kalshi.env
+ExecStart=/usr/bin/python3 -m kalshi_engine.worker
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target

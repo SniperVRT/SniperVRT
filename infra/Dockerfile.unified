@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN useradd -m -u 1000 app
+RUN pip install --no-cache-dir apscheduler structlog
+COPY unified/ ./unified/
+RUN chown -R app:app /app
+USER app
+CMD ["python", "-c", "from unified.aggregator import aggregate; from unified.db import init_db; init_db(); import time; \nwhile True:\n  aggregate()\n  time.sleep(300)"]

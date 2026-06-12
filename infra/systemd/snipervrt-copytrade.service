@@ -1,0 +1,17 @@
+[Unit]
+Description=SniperVRT copy-trade worker
+After=network.target
+
+[Service]
+Type=simple
+User=snipervrt
+WorkingDirectory=/opt/snipervrt/copy_trade
+EnvironmentFile=/etc/snipervrt/copy_trade.env
+ExecStart=/usr/bin/python3 -m copy_trade.worker
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target
