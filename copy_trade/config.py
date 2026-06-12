@@ -66,6 +66,26 @@ class CopyTradeSettings(BaseSettings):
     max_leader_commission: float = 0.15      # skip vaults charging > 15% perf fee
     correlation_threshold: float = 0.70      # dedup vaults with daily-ret corr >= this
 
+    # ---- Live execution gates (mirror Kalshi) -------------------------------
+    live_enabled: bool = False               # MUST be true AND not dry-run
+    live_dry_run: bool = True
+    live_require_manual_approval: bool = True
+    per_vault_emergency_drawdown_pct: float = 0.20
+    max_locked_pct: float = 0.80             # cap fraction of capital under lockup
+    allocation_method: str = "score_weighted"  # score_weighted|fractional_kelly|risk_parity
+    kelly_fraction: float = 0.25
+    unified_max_drawdown_pct: float = 0.15
+
+    # ---- Notifications ------------------------------------------------------
+    slack_webhook_url: str = ""
+    discord_webhook_url: str = ""
+    notification_email_to: str = ""
+    notification_email_from: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
     # ---- Storage -------------------------------------------------------------
     db_path: Path = Path("./data/copy_trade.db")
     log_level: str = "INFO"

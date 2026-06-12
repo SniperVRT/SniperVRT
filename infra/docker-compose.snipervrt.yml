@@ -1,0 +1,37 @@
+version: "3.9"
+# SniperVRT Python subsystems: kalshi worker + copy-trade worker + unified.
+services:
+  kalshi-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kalshi
+    environment:
+      - LOG_LEVEL=INFO
+    volumes:
+      - ../kalshi/data:/app/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  copytrade-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.copytrade
+    environment:
+      - LOG_LEVEL=INFO
+      - KEYSTORE_PASSPHRASE
+    volumes:
+      - ../copy_trade/data:/app/data
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  unified-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.unified
+    volumes:
+      - ../kalshi/data:/app/kalshi/data:ro
+      - ../copy_trade/data:/app/copy_trade/data:ro
+      - ../data:/app/data
+    restart: unless-stopped

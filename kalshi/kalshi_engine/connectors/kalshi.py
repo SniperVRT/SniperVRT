@@ -237,6 +237,62 @@ class KalshiClient:
     def get_balance(self) -> dict:
         return self._get("/portfolio/balance", auth=True)
 
+    def signed_post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_retries: int = 4,
+    ) -> dict:
+        """Authenticated POST with RSA-PSS signature + retry.
+
+        Treats HTTP 409 as 'already submitted' (idempotent from caller's view).
+        """
+        import json as _json
+        full_path = self.http.base_url.path.rstrip("/") + path
+        body_str = _json.dumps(body, separators=(",", ":"), sort_keys=True)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                ts = str(int(time.time() * 1000))
+                if not self._signer or not self.settings.kalshi_api_key_id:
+                    raise RuntimeError("kalshi credentials missing for signed_post")
+                # Kalshi v2 preimage: ts + METHOD + path (body not part of sig).
+                sig = self._signer.sign(ts, "POST", full_path)
+                headers = {
+                    "KALSHI-ACCESS-KEY": self.settings.kalshi_api_key_id,
+                    "KALSHI-ACCESS-TIMESTAMP": ts,
+                    "KALSHI-ACCESS-SIGNATURE": sig,
+                    "Content-Type": "application/json",
+                }
+                r = self.http.post(path, content=body_str, headers=headers)
+                if r.status_code == 409:
+                    log.info("signed_post_idempotent_409", path=path)
+                    try:
+                        return r.json() if r.content else {"status": "already_submitted"}
+                    except Exception:  # noqa: BLE001
+                        return {"status": "already_submitted"}
+                if r.status_code == 429 or 500 <= r.status_code < 600:
+                    if attempt > max_retries:
+                        r.raise_for_status()
+                    delay = min(16.0, 2 ** (attempt - 1) + random.random() * 0.5)
+                    log.warning("post_retry", path=path, status=r.status_code,
+                                attempt=attempt, delay=delay)
+                    time.sleep(delay)
+                    continue
+                r.raise_for_status()
+                payload = r.json() if r.content else {}
+                if not isinstance(payload, dict):
+                    raise ValueError("unexpected response type")
+                return payload
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                if attempt > max_retries:
+                    raise
+                delay = min(16.0, 2 ** (attempt - 1) + random.random() * 0.5)
+                log.warning("post_network_retry", path=path, attempt=attempt, err=str(e))
+                time.sleep(delay)
+
 
 # --------------------------------------------------------------------------- #
 # Parsing

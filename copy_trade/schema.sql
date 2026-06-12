@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
                         CHECK (status IN ('active','paused','unsubscribed','error')),
     external_sub_id TEXT,                       -- platform's subscription id
     lockup_until_ms INTEGER,                    -- ms timestamp; can't withdraw before
+    entry_equity_usdt REAL,                     -- vault equity at subscribe time (for watchdog)
     error           TEXT
 );
 
@@ -141,6 +142,122 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     avg_alloc_count REAL,
     notes           TEXT
 );
+
+-- ---- Validation runs (testnet roundtrips, promotion gates) -----------------
+CREATE TABLE IF NOT EXISTS validation_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL,              -- 'testnet_roundtrip' | 'promotion_check'
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    passed_at       TEXT,                       -- non-null only if all steps passed
+    details_json    TEXT NOT NULL,
+    notes           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_val_kind ON validation_runs(kind, passed_at);
+
+CREATE TABLE IF NOT EXISTS paper_rebalance_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at          TEXT NOT NULL,
+    counts_json     TEXT NOT NULL,
+    success         INTEGER NOT NULL DEFAULT 1
+);
+
+-- ---- Data quality failures -------------------------------------------------
+CREATE TABLE IF NOT EXISTS data_quality_failures (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at     TEXT NOT NULL,
+    source          TEXT NOT NULL,              -- 'kalshi_market' | 'hl_vault'
+    reason          TEXT NOT NULL,
+    raw_json        TEXT
+);
+
+-- ---- Event log (structlog persistence, populated by Prompt 4) --------------
+CREATE TABLE IF NOT EXISTS events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    level           TEXT NOT NULL,
+    logger          TEXT,
+    event           TEXT NOT NULL,
+    payload_json    TEXT,
+    host            TEXT,
+    model_version   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+CREATE TABLE IF NOT EXISTS raw_payloads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at     TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    request_hash    TEXT,
+    payload_json    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_payload_src ON raw_payloads(source, captured_at);
+
+-- ---- Sent notifications (idempotency) --------------------------------------
+CREATE TABLE IF NOT EXISTS sent_notifications (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_hash      TEXT NOT NULL UNIQUE,
+    sent_at         TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    title           TEXT
+);
+
+-- ---- Model versions --------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_versions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    version         TEXT NOT NULL UNIQUE,
+    params_json     TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    notes           TEXT
+);
+
+-- ---- Tax lots (FIFO ledger) ------------------------------------------------
+CREATE TABLE IF NOT EXISTS tax_lots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_address   TEXT NOT NULL,
+    opened_at       TEXT NOT NULL,
+    units_usdt      REAL NOT NULL,
+    cost_basis_usdt REAL NOT NULL,
+    closed_at       TEXT,
+    proceeds_usdt   REAL,
+    realised_gain   REAL,
+    holding_days    INTEGER,
+    is_long_term    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_taxlots_vault ON tax_lots(vault_address, opened_at);
+
+-- ---- Portfolio risk snapshots ----------------------------------------------
+CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at     TEXT NOT NULL,
+    avg_pairwise_corr REAL,
+    max_pairwise_corr REAL,
+    n_pairs         INTEGER,
+    same_leader_max_pct REAL,
+    locked_pct      REAL,
+    var_95_usdt     REAL,
+    cvar_95_usdt    REAL
+);
+
+-- ---- External signals ------------------------------------------------------
+CREATE TABLE IF NOT EXISTS external_signals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at     TEXT NOT NULL,
+    source          TEXT NOT NULL,              -- 'twitter' | 'onchain' | 'macro'
+    key             TEXT NOT NULL,              -- vault uid or asset
+    score           REAL,
+    payload_json    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_extsig ON external_signals(source, key, captured_at);
+
+-- ---- Subscription entry equity (for watchdog drawdown calc) ----------------
+-- Note: column is added via ALTER if upgrading; included here for fresh DBs.
 
 -- ---- Emergency stop log ----------------------------------------------------
 CREATE TABLE IF NOT EXISTS safety_events (

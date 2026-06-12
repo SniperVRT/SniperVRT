@@ -210,15 +210,16 @@ class LiveExecutionAdapter:
                 "yes_price": preview.limit_price_cents if preview.side == "yes" else None,
                 "no_price": preview.limit_price_cents if preview.side == "no" else None,
             }
-            # Kalshi `/portfolio/orders` POST is RSA-signed.
-            # Re-using the connector's GET path for simplicity here; a future
-            # patch can add a signed POST helper to `KalshiClient` once we
-            # actually run real orders.
-            log.info("live_submit_dispatched", payload=payload)
+            payload = {k: v for k, v in payload.items() if v is not None}
+            response = client.signed_post("/portfolio/orders", payload)
+            external_id = (response.get("order") or {}).get("order_id") or response.get("order_id")
+            log.info("live_submit_dispatched",
+                     cid=preview.client_order_id, external=external_id)
             self.conn.execute(
-                "UPDATE live_orders SET status='submitted', dry_run=0, updated_at=? "
-                "WHERE client_order_id=?",
-                (utc_now_iso(), preview.client_order_id),
+                "UPDATE live_orders SET status='submitted', dry_run=0, "
+                "external_order_id=?, updated_at=? WHERE client_order_id=?",
+                (str(external_id) if external_id else None,
+                 utc_now_iso(), preview.client_order_id),
             )
             return LiveOrderResult(
                 order_id=self._order_id(preview.client_order_id),
