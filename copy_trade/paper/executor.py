@@ -70,14 +70,17 @@ def execute_paper_decisions(
                     continue
                 if d.target_usdt < settings.min_allocation_usdt:
                     continue
+                from ..execution.subscriptions import vault_equity_from_db
+                entry_eq = vault_equity_from_db(conn, d.master_uid)
                 conn.execute(
                     """
                     INSERT INTO subscriptions
                         (master_uid, platform, mode, allocated_usdt, subscribed_at,
-                         status, external_sub_id, lockup_until_ms)
-                    VALUES (?, 'hyperliquid', 'paper', ?, ?, 'active', '', ?)
+                         status, external_sub_id, lockup_until_ms, entry_equity_usdt)
+                    VALUES (?, 'hyperliquid', 'paper', ?, ?, 'active', '', ?, ?)
                     """,
-                    (d.master_uid, d.target_usdt, utc_now_iso(), _lockup_ts()),
+                    (d.master_uid, d.target_usdt, utc_now_iso(), _lockup_ts(),
+                     entry_eq if entry_eq else d.target_usdt),
                 )
                 log.info("paper_subscribe", uid=d.master_uid, usdt=d.target_usdt)
                 counts["subscribe"] += 1

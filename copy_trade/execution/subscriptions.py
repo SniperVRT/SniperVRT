@@ -34,6 +34,30 @@ USER_VAULT_LOCKUP_MS = 24 * 60 * 60 * 1000  # 24h
 PLATFORM = "hyperliquid"
 
 
+def vault_equity_from_db(conn: sqlite3.Connection, uid: str) -> float | None:
+    """Latest known vault equity from the most recent snapshot's raw_json.
+
+    Used to stamp entry_equity_usdt at subscribe time without an API call,
+    which the watchdog later compares against to detect blowups.
+    """
+    row = conn.execute(
+        "SELECT raw_json FROM trader_snapshots WHERE master_uid=? "
+        "ORDER BY captured_at DESC LIMIT 1", (uid,),
+    ).fetchone()
+    if not row or not row["raw_json"]:
+        return None
+    try:
+        raw = json.loads(row["raw_json"])
+        for entry in (raw.get("portfolio") or []):
+            if isinstance(entry, list) and len(entry) == 2 and entry[0] == "allTime":
+                hist = (entry[1] or {}).get("accountValueHistory") or []
+                if hist:
+                    return float(hist[-1][1])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def active_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Active LIVE subscriptions only. Paper subs are isolated by mode."""
     rows = conn.execute(
@@ -102,15 +126,16 @@ def execute_decisions(
                         d.master_uid, allocated_usdt=d.target_usdt,
                     )
                     ext_id = _extract_tx_id(result)
+                entry_eq = vault_equity_from_db(conn, d.master_uid)
                 conn.execute(
                     """
                     INSERT INTO subscriptions
                         (master_uid, platform, mode, allocated_usdt, subscribed_at,
-                         status, external_sub_id, lockup_until_ms)
-                    VALUES (?, ?, 'live', ?, ?, 'active', ?, ?)
+                         status, external_sub_id, lockup_until_ms, entry_equity_usdt)
+                    VALUES (?, ?, 'live', ?, ?, 'active', ?, ?, ?)
                     """,
                     (d.master_uid, PLATFORM, d.target_usdt, utc_now_iso(),
-                     ext_id, lockup_until),
+                     ext_id, lockup_until, entry_eq if entry_eq else d.target_usdt),
                 )
                 counts["subscribe"] += 1
 

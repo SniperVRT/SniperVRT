@@ -131,6 +131,10 @@ def start_worker(dry_run: bool = True,
     settings = settings or get_settings()
     init_db(settings.db_path)
 
+    # Healthcheck + metrics on :8081 alongside the scheduler.
+    from .ops.healthserver import start_in_background
+    health_server = start_in_background(port=8081, settings=settings)
+
     scheduler = BlockingScheduler(timezone="UTC")
 
     scheduler.add_job(
@@ -160,6 +164,7 @@ def start_worker(dry_run: bool = True,
 
     def _shutdown(signo, _frame):
         log.info("worker_shutdown", signal=signo)
+        health_server.shutdown()
         scheduler.shutdown(wait=False)
         sys.exit(0)
 
